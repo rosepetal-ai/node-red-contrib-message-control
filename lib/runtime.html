@@ -1,0 +1,413 @@
+<style type="text/css">
+.rosepetal-message-snapshot-panel {
+  margin-top: 12px;
+  border: 1px solid var(--red-ui-secondary-border-color, #d9d9d9);
+  border-radius: 4px;
+  background: var(--red-ui-secondary-background, #f7f7f7);
+  color: var(--red-ui-primary-text-color, #333);
+  display: none;
+  flex-direction: column;
+}
+
+.rosepetal-message-snapshot-panel.visible {
+  display: flex;
+}
+
+.rosepetal-message-snapshot-floating {
+  position: absolute;
+  margin-top: 0;
+  top: 0;
+  left: 0;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  box-shadow: var(--red-ui-box-shadow, 0 12px 32px rgba(0, 0, 0, 0.18));
+  z-index: 1400;
+  pointer-events: auto;
+}
+
+.rosepetal-message-snapshot-floating .rosepetal-message-snapshot-body {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+
+.rosepetal-message-snapshot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--red-ui-secondary-border-color, #d9d9d9);
+  font-weight: 600;
+  background: var(--red-ui-secondary-highlight, #ededed);
+}
+
+.rosepetal-message-snapshot-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rosepetal-message-snapshot-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rosepetal-message-snapshot-actions .red-ui-button {
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.rosepetal-message-snapshot-body {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rosepetal-message-snapshot-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9em;
+  color: var(--red-ui-secondary-text-color, #666);
+}
+
+.rosepetal-message-snapshot-section {
+  border: 1px solid var(--red-ui-tertiary-border-color, #e2e2e2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.rosepetal-message-snapshot-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-weight: 600;
+  padding: 6px 10px;
+  background: var(--red-ui-tertiary-background, #fafafa);
+  border-bottom: 1px solid var(--red-ui-tertiary-border-color, #e2e2e2);
+}
+
+.rosepetal-message-snapshot-section-header .rosepetal-message-snapshot-timestamp {
+  font-size: 0.85em;
+  color: var(--red-ui-secondary-text-color, #666);
+}
+
+.rosepetal-message-snapshot-json {
+  margin: 0;
+  padding: 10px;
+  background: transparent;
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--red-ui-monospace-font, monospace);
+  font-size: 0.85em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rosepetal-message-snapshot-empty {
+  font-style: italic;
+  color: var(--red-ui-secondary-text-color, #666);
+  padding: 0 10px 10px;
+}
+
+.rosepetal-message-snapshot-error {
+  color: var(--red-ui-warn-text-color, #d63f3f);
+}
+</style>
+<script type="text/javascript">
+(function() {
+  const PLUGIN_ID = "rosepetal-message-control/inspector";
+  const PANEL_CLASS = "rosepetal-message-snapshot-panel";
+  const REFRESH_BUTTON_CLASS = "rosepetal-message-snapshot-refresh";
+  let originalRefresh;
+  let currentNodeId = null;
+  let pendingRequest = null;
+
+  function buildAdminUrl(path) {
+    let base = (RED.settings && RED.settings.apiRootUrl) || "";
+    if (base.length && base.slice(-1) !== '/') {
+      base += '/';
+    }
+    return base + path.replace(/^\//, '');
+  }
+
+  function shouldInspect(node) {
+    if (!node || Array.isArray(node)) {
+      return false;
+    }
+    if (!node.id) {
+      return false;
+    }
+    const type = node.type || "";
+    if (type === 'tab' || type === 'group') {
+      return false;
+    }
+    if (type === 'subflow' || /^subflow:/.test(type)) {
+      return false;
+    }
+    return true;
+  }
+
+  function ensurePanel() {
+    const content = $(".red-ui-sidebar-info .red-ui-info-table").parent();
+    if (!content.length) {
+      return null;
+    }
+    let panel = content.children('.' + PANEL_CLASS);
+    if (!panel.length) {
+      panel = $('<div>').addClass(PANEL_CLASS).appendTo(content);
+      const header = $('<div>').addClass('rosepetal-message-snapshot-header').appendTo(panel);
+      $('<span>').addClass('rosepetal-message-snapshot-title')
+        .append($('<i class="fa fa-history"></i>'))
+        .append(' Message Snapshot')
+        .appendTo(header);
+      const refreshBtn = $('<button type="button" class="red-ui-button red-ui-button-small"></button>')
+        .addClass(REFRESH_BUTTON_CLASS)
+        .append('<i class="fa fa-refresh"></i>')
+        .appendTo(header);
+      refreshBtn.on('click', function(evt) {
+        evt.preventDefault();
+        if (currentNodeId) {
+          fetchSnapshot(currentNodeId);
+        }
+      });
+      const body = $('<div>').addClass('rosepetal-message-snapshot-body').appendTo(panel);
+      const status = $('<div>').addClass('rosepetal-message-snapshot-status').hide().appendTo(body);
+      const statusIcon = $('<i class="fa"></i>').appendTo(status);
+      const statusText = $('<span></span>').appendTo(status);
+
+      const inputSection = createSection('Last Input').appendTo(body);
+      const outputSection = createSection('Last Output').appendTo(body);
+
+      panel.data('elements', {
+        body,
+        status,
+        statusIcon,
+        statusText,
+        inputSection,
+        outputSection
+      });
+    }
+    return panel;
+  }
+
+  function createSection(title) {
+    const section = $('<div>').addClass('rosepetal-message-snapshot-section');
+    const header = $('<div>').addClass('rosepetal-message-snapshot-section-header').appendTo(section);
+    $('<span>').text(title).appendTo(header);
+    const timestamp = $('<span>').addClass('rosepetal-message-snapshot-timestamp').appendTo(header);
+    const content = $('<pre>').addClass('rosepetal-message-snapshot-json').appendTo(section);
+    const empty = $('<div>').addClass('rosepetal-message-snapshot-empty').hide().appendTo(section);
+    section.data('elements', {
+      header,
+      timestamp,
+      content,
+      empty
+    });
+    return section;
+  }
+
+  function formatTimestamp(ts) {
+    if (!ts) {
+      return 'No data yet';
+    }
+    try {
+      const date = new Date(ts);
+      if (!isNaN(date.getTime())) {
+        return date.toLocaleString();
+      }
+    } catch (err) {
+      // fall through
+    }
+    return String(ts);
+  }
+
+  function formatMessage(value) {
+    if (value === null) {
+      return 'null';
+    }
+    if (value === undefined) {
+      return 'undefined';
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (err) {
+      return String(value);
+    }
+  }
+
+  function setStatus(panel, type, text) {
+    const elements = panel.data('elements');
+    if (!elements) {
+      return;
+    }
+    const { status, statusIcon, statusText, inputSection, outputSection } = elements;
+    status.removeClass('rosepetal-message-snapshot-error');
+    if (!text) {
+      status.hide();
+      return;
+    }
+    status.show();
+    statusText.text(text);
+    statusIcon.removeClass();
+    statusIcon.addClass('fa');
+    switch (type) {
+      case 'loading':
+        statusIcon.addClass('fa-refresh fa-spin');
+        break;
+      case 'error':
+        statusIcon.addClass('fa-exclamation-triangle');
+        status.addClass('rosepetal-message-snapshot-error');
+        break;
+      default:
+        statusIcon.addClass('fa-info-circle');
+        break;
+    }
+    inputSection.toggle(type !== 'error');
+    outputSection.toggle(type !== 'error');
+  }
+
+  function renderSection(section, snapshot, timestamp) {
+    const elements = section.data('elements');
+    if (!elements) {
+      return;
+    }
+    const { timestamp: timeEl, content, empty } = elements;
+    const hasData = snapshot !== null && snapshot !== undefined;
+    timeEl.text(formatTimestamp(timestamp));
+    if (hasData) {
+      empty.hide();
+      content.show().text(formatMessage(snapshot));
+    } else {
+      content.hide();
+      empty.text('No data captured yet.').show();
+    }
+  }
+
+  function clearPanel(panel) {
+    const elements = panel && panel.data('elements');
+    if (!elements) {
+      return;
+    }
+    if (pendingRequest) {
+      pendingRequest.abort();
+      pendingRequest = null;
+    }
+    elements.status.hide();
+    renderSection(elements.inputSection, null, null);
+    renderSection(elements.outputSection, null, null);
+    elements.inputSection.find('.rosepetal-message-snapshot-empty').text('Select a node to view its last input message.');
+    elements.outputSection.find('.rosepetal-message-snapshot-empty').text('Select a node to view its last output message.');
+    panel.removeClass('visible');
+    currentNodeId = null;
+  }
+
+  function updateSnapshot(node) {
+    const panel = ensurePanel();
+    if (!panel) {
+      return;
+    }
+    if (!shouldInspect(node)) {
+      clearPanel(panel);
+      return;
+    }
+    panel.addClass('visible');
+    if (pendingRequest) {
+      pendingRequest.abort();
+      pendingRequest = null;
+    }
+    currentNodeId = node.id;
+    setStatus(panel, 'loading', 'Loading snapshot…');
+    renderSection(panel.data('elements').inputSection, null, null);
+    renderSection(panel.data('elements').outputSection, null, null);
+    fetchSnapshot(node.id, panel);
+  }
+
+  function fetchSnapshot(nodeId, panel) {
+    const targetPanel = panel || ensurePanel();
+    if (!targetPanel) {
+      return;
+    }
+    const url = buildAdminUrl('rosepetal/message-control/nodes/' + encodeURIComponent(nodeId));
+    if (pendingRequest) {
+      pendingRequest.abort();
+      pendingRequest = null;
+    }
+    const request = $.ajax({
+      url,
+      dataType: 'json',
+      cache: false
+    }).done(function(data) {
+      if (nodeId !== currentNodeId) {
+        return;
+      }
+      setStatus(targetPanel, null, null);
+      const elements = targetPanel.data('elements');
+      const hasAnyData = !!(data && (data.lastInput !== null || data.lastOutput !== null));
+      if (!hasAnyData) {
+        renderSection(elements.inputSection, null, data ? data.lastInputAt : null);
+        renderSection(elements.outputSection, null, data ? data.lastOutputAt : null);
+        elements.inputSection.find('.rosepetal-message-snapshot-empty').text('No input captured for this node yet.');
+        elements.outputSection.find('.rosepetal-message-snapshot-empty').text('No output captured for this node yet.');
+      } else {
+        renderSection(elements.inputSection, data.lastInput, data.lastInputAt);
+        renderSection(elements.outputSection, data.lastOutput, data.lastOutputAt);
+      }
+    }).fail(function(jqXHR) {
+      if (nodeId !== currentNodeId) {
+        return;
+      }
+      if (jqXHR && (jqXHR.status === 0 || jqXHR.statusText === 'abort')) {
+        return;
+      }
+      if (jqXHR && jqXHR.status === 404) {
+        setStatus(targetPanel, null, 'No snapshots recorded for this node yet.');
+        renderSection(targetPanel.data('elements').inputSection, null, null);
+        renderSection(targetPanel.data('elements').outputSection, null, null);
+      } else {
+        setStatus(targetPanel, 'error', 'Unable to load snapshot.');
+      }
+    }).always(function() {
+      if (pendingRequest === request) {
+        pendingRequest = null;
+      }
+    });
+    pendingRequest = request;
+  }
+
+  function patchInfoPanel() {
+    if (!RED.sidebar || !RED.sidebar.info || typeof RED.sidebar.info.refresh !== 'function') {
+      setTimeout(patchInfoPanel, 300);
+      return;
+    }
+    if (RED.sidebar.info.__rosepetalMessageSnapshotPatched) {
+      return;
+    }
+    originalRefresh = RED.sidebar.info.refresh;
+    RED.sidebar.info.refresh = function(node) {
+      originalRefresh.call(RED.sidebar.info, node);
+      try {
+        updateSnapshot(node);
+      } catch (err) {
+        console.warn('rosepetal-message-control: failed to update snapshot panel', err);
+      }
+    };
+    RED.sidebar.info.__rosepetalMessageSnapshotPatched = true;
+  }
+
+  const definition = {
+    type: 'ui',
+    onadd: function() {
+      patchInfoPanel();
+    }
+  };
+
+  RED.plugins.registerPlugin(PLUGIN_ID, definition);
+})();
+</script>
