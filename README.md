@@ -2,6 +2,8 @@
 
 A Node-RED runtime plugin that remembers the last message each node received and sent. It gives you a live “what just happened?” snapshot without wiring extra debug nodes.
 
+![Example](assets/example.png)
+
 ## Why you might want it
 - **See data instantly**: select any runtime node in the editor and the latest inbound/outbound payloads appear in the Info sidebar.
 - **Stay lightweight**: snapshots are automatically cleaned (buffers, long arrays, base64 blobs become annotated previews) so they are safe to ship to the editor.

@@ -1,6 +1,6 @@
 {
   "name": "node-red-contrib-rosepetal-message-control",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Node-RED runtime plugin that records and exposes the last input and output message seen by every node for easier debugging.",
   "main": "lib/runtime.js",
   "keywords": [
@@ -11,10 +11,6 @@
   ],
   "author": "Rosepetal",
   "license": "MIT",
-  "files": [
-    "lib",
-    "README.md"
-  ],
   "node-red": {
     "plugins": {
       "rosepetal-message-control": "lib/runtime.js"
