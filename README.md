@@ -1,20 +1,20 @@
 # node-red-contrib-rosepetal-message-control
 
-Runtime instrumentation for Node-RED that remembers the most recent message each node received and sent. The captured snapshots make it easier to understand what flows are doing without sprinkling debug nodes everywhere.
+A Node-RED runtime plugin that remembers the last message each node received and sent. It gives you a live “what just happened?” snapshot without wiring extra debug nodes.
 
-## What it does
-- Hooks into the Node-RED runtime message pipeline via `RED.hooks` so every node's inbound and outbound traffic is observed.
-- Stores a clone of the last inbound and outbound message plus timestamps, capped at 256 KB per snapshot.
-- Surfaces the latest input/output directly inside the Editor's *Info* sidebar whenever you select a node, with an inline refresh button.
-- Exposes lightweight HTTP endpoints so you can inspect the captured messages from the editor or any HTTP client. Only nodes that have seen traffic since the runtime started will appear in the responses.
+## Why you might want it
+- **See data instantly**: select any runtime node in the editor and the latest inbound/outbound payloads appear in the Info sidebar.
+- **Stay lightweight**: snapshots are automatically cleaned (buffers, long arrays, base64 blobs become annotated previews) so they are safe to ship to the editor.
+- **Pause when needed**: a single toggle lets you stop capturing if you are chasing performance or privacy issues.
+- **Script-friendly**: the same data is available over HTTP for tooling, tests, or dashboards.
 
-## Installation
-1. Change into your Node-RED user directory (typically `~/.node-red`).
-2. Install the package:
+## Quick start
+1. Change into your Node-RED user directory (usually `~/.node-red`).
+2. Install the plugin:
    ```bash
    npm install node-red-contrib-rosepetal-message-control
    ```
-3. Ensure the plugin is enabled. In `settings.js`, add or update the `plugins` section:
+3. Enable it inside `settings.js`:
    ```js
    plugins: {
      'node-red-contrib-rosepetal-message-control': {
@@ -24,45 +24,37 @@ Runtime instrumentation for Node-RED that remembers the most recent message each
    ```
 4. Restart Node-RED.
 
-> Node-RED v3.0 or later is required because the runtime hook API (`RED.hooks`) is what lets the plugin watch every node without patching their prototypes.
+Node-RED 3.0+ is required because the plugin relies on the `RED.hooks` runtime API.
 
-## HTTP endpoints
-All routes are served from the Node-RED admin HTTP server and require the `flows.read` permission when admin auth is enabled.
+## Using the snapshots in the editor
+1. Open the *Info* sidebar.
+2. Click any node on the canvas.
+3. A **Message Snapshot** card appears with two sections:
+   - *Last Input*: the most recent message the node received.
+   - *Last Output*: the most recent message it sent.
+4. Use the refresh button on the card to re-fetch without changing selection.
 
-- `GET /rosepetal/message-control/nodes`
-  - Returns an array with the node id, type, name, and timestamps of the last seen inbound/outbound message.
-- `GET /rosepetal/message-control/nodes/:id`
-  - Returns the full snapshot for the given node id (including cloned message objects).
+Snapshots use a clean format: large payloads are summarised, but every placeholder includes the original length so you can judge the size at a glance.
 
-Example response:
+## Pausing/resuming capture
+At the top of the Message Snapshot card you will find a **Capture snapshots** switch. Turning it off:
+- Stops the runtime hooks from storing new payloads.
+- Clears previously stored snapshots.
+- Changes the card status to “Snapshots paused. Enable capture to resume.”
 
-```json
-[
-  {
-    "id": "d3f1a4b0.f6c0a8",
-    "type": "function",
-    "name": "Transform order",
-    "lastInputAt": 1706811025123,
-    "lastOutputAt": 1706811025125
-  }
-]
-```
+Turn it back on whenever you are ready—the view refreshes automatically for the currently selected node.
 
-If the captured payload serialises to more than 256 KB, the snapshot is truncated and replaced with a preview that notes the original length.
+## Inspecting snapshots over HTTP
+If you prefer to script or automate, the plugin exposes a small admin API that mirrors the sidebar data (list nodes, inspect a specific node, get/set the capture flag). Details and example payloads live in [`docs/http-api.md`](docs/http-api.md).
 
-## Using the data in flows
-Because the instrumentation patches nodes at runtime, no wiring changes are required. For scripted access you can call the HTTP endpoint from a Function node (via `http request`) or any external tool you prefer. Each restart clears the stored snapshots.
-
-### Viewing snapshots in the editor
-- Simply click a runtime node on the canvas: a floating **Message Snapshot** card pops up next to it and, if the *Info* sidebar is open, the same payloads appear there too.
-- Use the refresh button on the card (or in the sidebar) to re-fetch the snapshot without reselecting the node.
-- If the node hasn't processed traffic since the runtime started, you'll see a friendly notice instead of payload data.
+## How it works (at a glance)
+- Hooks into `onReceive`/`onSend` via `RED.hooks` so every runtime node is observed without patching node prototypes.
+- Stores the last inbound/outbound payload, node metadata, and timestamps in memory.
+- Runs each payload through a clean-up pass (depth/length limits, typed-array summaries, buffer placeholders, base64/data URL detection, 256 KB cap) before exposing it.
+- Serves the snapshot data to both the editor plugin (for the Info sidebar panel) and the admin HTTP endpoints.
 
 ## Limitations & notes
-- Snapshots live in memory only; redeploying flows or restarting Node-RED clears them.
-- Buffers and binary payloads are cloned; large blobs may be truncated.
-- The plugin relies on internal runtime hook APIs, so new Node-RED releases might require future updates.
-- Only messages processed after the plugin is enabled are visible.
-
-## License
-MIT
+- Snapshots live only in memory. Restarting Node-RED or redeploying flows clears them.
+- Payloads larger than 256 KB are truncated to a preview string.
+- The HTTP routes require `flows.read` (GET) or `flows.write` (POST) permissions when admin authentication is enabled.
+- Only runtime nodes that have processed a message since the plugin was enabled will appear.

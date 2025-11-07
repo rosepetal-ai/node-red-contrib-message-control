@@ -116,6 +116,33 @@
 .rosepetal-message-snapshot-error {
   color: var(--red-ui-warn-text-color, #d63f3f);
 }
+
+.rosepetal-message-snapshot-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85em;
+  color: var(--red-ui-secondary-text-color, #666);
+}
+
+.rosepetal-message-snapshot-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.rosepetal-message-snapshot-toggle input {
+  margin: 0;
+}
+
+.rosepetal-message-snapshot-toggle-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
 </style>
 <script type="text/javascript">
 (function() {
@@ -125,6 +152,13 @@
   let originalRefresh;
   let currentNodeId = null;
   let pendingRequest = null;
+  let pendingSettingsRequest = null;
+  let selectionListenerAttached = false;
+  let runtimeSettings = {
+    enabled: true
+  };
+  let toggleBusy = false;
+  let suppressToggleEvents = 0;
 
   function buildAdminUrl(path) {
     let base = (RED.settings && RED.settings.apiRootUrl) || "";
@@ -151,6 +185,29 @@
     return true;
   }
 
+  function getNodeFromSelection(selection) {
+    if (!selection) {
+      return null;
+    }
+    if (selection.nodes) {
+      if (!Array.isArray(selection.nodes) || selection.nodes.length !== 1) {
+        return null;
+      }
+      const entry = selection.nodes[0];
+      return entry && (entry.node || entry) || null;
+    }
+    if (Array.isArray(selection)) {
+      if (selection.length !== 1) {
+        return null;
+      }
+      return selection[0] && (selection[0].node || selection[0]) || null;
+    }
+    if (selection.id && selection.type) {
+      return selection;
+    }
+    return null;
+  }
+
   function ensurePanel() {
     const content = $(".red-ui-sidebar-info .red-ui-info-table").parent();
     if (!content.length) {
@@ -170,11 +227,18 @@
         .appendTo(header);
       refreshBtn.on('click', function(evt) {
         evt.preventDefault();
+        if (!runtimeSettings.enabled) {
+          showSnapshotsDisabled(panel);
+          return;
+        }
         if (currentNodeId) {
           fetchSnapshot(currentNodeId);
         }
       });
       const body = $('<div>').addClass('rosepetal-message-snapshot-body').appendTo(panel);
+      const controls = $('<div>').addClass('rosepetal-message-snapshot-controls').appendTo(body);
+      const enabledToggle = createToggle('Capture snapshots', 'Enable or pause message recording');
+      controls.append(enabledToggle.wrapper);
       const status = $('<div>').addClass('rosepetal-message-snapshot-status').hide().appendTo(body);
       const statusIcon = $('<i class="fa"></i>').appendTo(status);
       const statusText = $('<span></span>').appendTo(status);
@@ -188,8 +252,19 @@
         statusIcon,
         statusText,
         inputSection,
-        outputSection
+        outputSection,
+        refreshButton: refreshBtn,
+        enabledToggle
       });
+
+      enabledToggle.checkbox.on('change', function() {
+        if (suppressToggleEvents) {
+          return;
+        }
+        updateRuntimeSetting({ enabled: this.checked });
+      });
+
+      updateToggleUI(panel);
     }
     return panel;
   }
@@ -208,6 +283,19 @@
       empty
     });
     return section;
+  }
+
+  function createToggle(label, description) {
+    const wrapper = $('<label>').addClass('rosepetal-message-snapshot-toggle');
+    if (description) {
+      wrapper.attr('title', description);
+    }
+    const checkbox = $('<input type="checkbox">').appendTo(wrapper);
+    $('<span>').text(label).appendTo(wrapper);
+    return {
+      wrapper,
+      checkbox
+    };
   }
 
   function formatTimestamp(ts) {
@@ -304,8 +392,176 @@
     renderSection(elements.outputSection, null, null);
     elements.inputSection.find('.rosepetal-message-snapshot-empty').text('Select a node to view its last input message.');
     elements.outputSection.find('.rosepetal-message-snapshot-empty').text('Select a node to view its last output message.');
-    panel.removeClass('visible');
     currentNodeId = null;
+    if (runtimeSettings.enabled) {
+      panel.removeClass('visible');
+    } else {
+      showSnapshotsDisabled(panel);
+    }
+  }
+
+  function updateToggleUI(panel) {
+    const targetPanel = panel || ensurePanel();
+    if (!targetPanel) {
+      return;
+    }
+    const elements = targetPanel.data('elements');
+    if (!elements || !elements.enabledToggle) {
+      return;
+    }
+    suppressToggleEvents += 1;
+    elements.enabledToggle.checkbox.prop('checked', !!runtimeSettings.enabled);
+    suppressToggleEvents -= 1;
+
+    elements.enabledToggle.checkbox.prop('disabled', toggleBusy);
+    elements.enabledToggle.wrapper.toggleClass('rosepetal-message-snapshot-toggle-disabled', toggleBusy);
+    if (elements.refreshButton) {
+      elements.refreshButton.prop('disabled', !runtimeSettings.enabled);
+    }
+  }
+
+  function showSnapshotsDisabled(panel) {
+    const targetPanel = panel || ensurePanel();
+    if (!targetPanel) {
+      return;
+    }
+    const elements = targetPanel.data('elements');
+    if (!elements) {
+      return;
+    }
+    if (pendingRequest) {
+      pendingRequest.abort();
+      pendingRequest = null;
+    }
+    updateToggleUI(targetPanel);
+    targetPanel.addClass('visible');
+    elements.status.show().removeClass('rosepetal-message-snapshot-error');
+    elements.statusIcon.removeClass().addClass('fa fa-pause-circle');
+    elements.statusText.text('Snapshots paused. Enable capture to resume.');
+    elements.inputSection.hide();
+    elements.outputSection.hide();
+  }
+
+  function getCurrentNodeInstance() {
+    if (!currentNodeId || !RED.nodes || typeof RED.nodes.node !== 'function') {
+      return null;
+    }
+    try {
+      return RED.nodes.node(currentNodeId) || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function handleSettingsApplied(panel, previousState) {
+    const targetPanel = panel || ensurePanel();
+    updateToggleUI(targetPanel);
+    if (!runtimeSettings.enabled) {
+      showSnapshotsDisabled(targetPanel);
+      return;
+    }
+    if (!previousState) {
+      return;
+    }
+    const reEnabled = !previousState.enabled && runtimeSettings.enabled;
+    if (reEnabled && currentNodeId) {
+      const node = getCurrentNodeInstance();
+      if (node) {
+        updateSnapshot(node);
+      }
+    }
+  }
+
+  function fetchRuntimeSettings(options = {}) {
+    const panel = options.panel || ensurePanel();
+    const url = buildAdminUrl('rosepetal/message-control/settings');
+    if (pendingSettingsRequest) {
+      pendingSettingsRequest.abort();
+      pendingSettingsRequest = null;
+    }
+    const request = $.ajax({
+      url,
+      dataType: 'json',
+      cache: false
+    }).done(function(data) {
+      if (!data) {
+        return;
+      }
+      const previousState = {
+        enabled: runtimeSettings.enabled
+      };
+      if (Object.prototype.hasOwnProperty.call(data, 'enabled') && typeof data.enabled === 'boolean') {
+        runtimeSettings.enabled = data.enabled;
+      }
+      handleSettingsApplied(panel, previousState);
+    }).fail(function() {
+      if (!options.silent) {
+        const targetPanel = panel || ensurePanel();
+        if (targetPanel) {
+          setStatus(targetPanel, 'error', 'Unable to load snapshot settings.');
+        }
+      }
+    }).always(function() {
+      if (pendingSettingsRequest === request) {
+        pendingSettingsRequest = null;
+      }
+    });
+    pendingSettingsRequest = request;
+    return request;
+  }
+
+  function updateRuntimeSetting(patch) {
+    const panel = ensurePanel();
+    if (!panel) {
+      return;
+    }
+
+    const desired = {};
+    if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) {
+      const targetState = !!patch.enabled;
+      if (targetState !== runtimeSettings.enabled) {
+        desired.enabled = targetState;
+      }
+    }
+
+    if (!Object.keys(desired).length) {
+      updateToggleUI(panel);
+      return;
+    }
+
+    const previousState = {
+      enabled: runtimeSettings.enabled
+    };
+
+    toggleBusy = true;
+    updateToggleUI(panel);
+
+    const csrfToken = RED.settings && RED.settings.csrfToken;
+    const payload = { ...desired };
+    if (csrfToken) {
+      payload._csrf = csrfToken;
+    }
+
+    $.ajax({
+      method: 'POST',
+      url: buildAdminUrl('rosepetal/message-control/settings'),
+      data: JSON.stringify(payload),
+      contentType: 'application/json',
+      processData: false,
+      cache: false
+    }).done(function(data) {
+      if (data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'enabled') && typeof data.enabled === 'boolean') {
+        runtimeSettings.enabled = data.enabled;
+      }
+      handleSettingsApplied(panel, previousState);
+    }).fail(function() {
+      runtimeSettings.enabled = previousState.enabled;
+      setStatus(panel, 'error', 'Unable to update snapshot settings.');
+      updateToggleUI(panel);
+    }).always(function() {
+      toggleBusy = false;
+      updateToggleUI(panel);
+    });
   }
 
   function updateSnapshot(node) {
@@ -317,21 +573,36 @@
       clearPanel(panel);
       return;
     }
+    currentNodeId = node.id;
+    updateToggleUI(panel);
+    if (!runtimeSettings.enabled) {
+      showSnapshotsDisabled(panel);
+      return;
+    }
     panel.addClass('visible');
     if (pendingRequest) {
       pendingRequest.abort();
       pendingRequest = null;
     }
-    currentNodeId = node.id;
+    const elements = panel.data('elements');
+    if (!elements) {
+      return;
+    }
+    elements.inputSection.show();
+    elements.outputSection.show();
     setStatus(panel, 'loading', 'Loading snapshot…');
-    renderSection(panel.data('elements').inputSection, null, null);
-    renderSection(panel.data('elements').outputSection, null, null);
+    renderSection(elements.inputSection, null, null);
+    renderSection(elements.outputSection, null, null);
     fetchSnapshot(node.id, panel);
   }
 
   function fetchSnapshot(nodeId, panel) {
     const targetPanel = panel || ensurePanel();
     if (!targetPanel) {
+      return;
+    }
+    if (!runtimeSettings.enabled) {
+      showSnapshotsDisabled(targetPanel);
       return;
     }
     const url = buildAdminUrl('rosepetal/message-control/nodes/' + encodeURIComponent(nodeId));
@@ -401,10 +672,36 @@
     RED.sidebar.info.__rosepetalMessageSnapshotPatched = true;
   }
 
+  function attachSelectionListener() {
+    if (!RED.events || typeof RED.events.on !== 'function') {
+      setTimeout(attachSelectionListener, 300);
+      return;
+    }
+    if (selectionListenerAttached) {
+      return;
+    }
+    RED.events.on('view:selection-changed', function(selection) {
+      const node = getNodeFromSelection(selection);
+      updateSnapshot(node);
+    });
+    selectionListenerAttached = true;
+    try {
+      const currentSelection = RED.view && typeof RED.view.selection === 'function' ? RED.view.selection() : null;
+      const node = getNodeFromSelection(currentSelection);
+      if (node) {
+        updateSnapshot(node);
+      }
+    } catch (err) {
+      // ignore bootstrap errors
+    }
+  }
+
   const definition = {
     type: 'ui',
     onadd: function() {
       patchInfoPanel();
+      attachSelectionListener();
+      fetchRuntimeSettings({ silent: true });
     }
   };
 
