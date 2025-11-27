@@ -1,4 +1,4 @@
-# node-red-contrib-rosepetal-message-control
+# @rosepetal/node-red-contrib-rosepetal-message-control
 
 A Node-RED runtime plugin that remembers the last message each node received and sent. It gives you a live “what just happened?” snapshot without wiring extra debug nodes.
 
@@ -14,12 +14,12 @@ A Node-RED runtime plugin that remembers the last message each node received and
 1. Change into your Node-RED user directory (usually `~/.node-red`).
 2. Install the plugin:
    ```bash
-   npm install node-red-contrib-rosepetal-message-control
+   npm install @rosepetal/node-red-contrib-rosepetal-message-control
    ```
 3. Enable it inside `settings.js`:
    ```js
    plugins: {
-     'node-red-contrib-rosepetal-message-control': {
+     '@rosepetal/node-red-contrib-rosepetal-message-control': {
        enabled: true
      }
    }
