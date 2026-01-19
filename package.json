@@ -1,5 +1,5 @@
 {
-  "name": "@rosepetal/node-red-contrib-rosepetal-message-control",
+  "name": "@rosepetal/node-red-contrib-message-control",
   "version": "1.0.0",
   "description": "Node-RED runtime plugin that records and exposes the last input and output message seen by every node for easier debugging.",
   "main": "lib/runtime.js",
@@ -13,12 +13,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rosepetal-ai/node-red-contrib-rosepetal-message-control.git"
+    "url": "git+https://github.com/rosepetal-ai/node-red-contrib-message-control.git"
   },
   "bugs": {
-    "url": "https://github.com/rosepetal-ai/node-red-contrib-rosepetal-message-control/issues"
+    "url": "https://github.com/rosepetal-ai/node-red-contrib-message-control/issues"
   },
-  "homepage": "https://github.com/rosepetal-ai/node-red-contrib-rosepetal-message-control#readme",
+  "homepage": "https://github.com/rosepetal-ai/node-red-contrib-message-control#readme",
   "publishConfig": {
     "access": "public"
   },
