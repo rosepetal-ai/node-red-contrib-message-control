@@ -361,14 +361,18 @@
     outputSection.toggle(type !== 'error');
   }
 
-  function renderSection(section, snapshot, timestamp) {
+  function renderSection(section, snapshot, timestamp, skipped) {
     const elements = section.data('elements');
     if (!elements) {
       return;
     }
     const { timestamp: timeEl, content, empty } = elements;
     const hasData = snapshot !== null && snapshot !== undefined;
-    timeEl.text(formatTimestamp(timestamp));
+    let label = formatTimestamp(timestamp);
+    if (hasData && typeof skipped === 'number' && skipped > 0) {
+      label += ' · +' + skipped + ' newer not sampled';
+    }
+    timeEl.text(label);
     if (hasData) {
       empty.hide();
       content.show().text(formatMessage(snapshot));
@@ -627,8 +631,8 @@
         elements.inputSection.find('.rosepetal-message-snapshot-empty').text('No input captured for this node yet.');
         elements.outputSection.find('.rosepetal-message-snapshot-empty').text('No output captured for this node yet.');
       } else {
-        renderSection(elements.inputSection, data.lastInput, data.lastInputAt);
-        renderSection(elements.outputSection, data.lastOutput, data.lastOutputAt);
+        renderSection(elements.inputSection, data.lastInput, data.lastInputAt, data.inputSkipped);
+        renderSection(elements.outputSection, data.lastOutput, data.lastOutputAt, data.outputSkipped);
       }
     }).fail(function(jqXHR) {
       if (nodeId !== currentNodeId) {
