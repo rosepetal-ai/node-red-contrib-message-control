@@ -185,6 +185,28 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
 - `unwired` — whether unwired-output capture is active, how many nodes currently use the send wrapper, and how many sends to outputs without wires were observed.
 - `errors` counts hook invocations that hit an unexpected exception (the message was still delivered).
 
+### `GET /rosepetal/message-control/logs`
+The last lines of Node-RED's log, kept by the plugin in a ring buffer (`logBufferSize`, default 2000; levels up to `logLevel`, default `info`). Node construction errors only ever reach the log: look here when a node does not start.
+
+**Query parameters** (all optional)
+- `level` — most verbose level returned: `fatal`, `error`, `warn`, `info`, `debug`, `trace`.
+- `text` — case-insensitive substring of the text, node name or node type (plain text, no regular expressions).
+- `node` — node id; `type` — node type.
+- `since`, `until` — epoch milliseconds.
+- `limit` — newest matching entries returned (default 200, max 1000), oldest first.
+
+**Response 200**
+```json
+{
+  "entries": [
+    { "seq": 41, "at": 1706811025123, "level": "error", "id": "d3f1a4b0", "type": "function", "name": "parse", "z": "tab1", "text": "SyntaxError: Unexpected identifier" }
+  ],
+  "matched": 1, "truncated": false, "buffered": 412, "bufferSize": 2000,
+  "oldestAt": 1706810000000, "droppedBeforeOldest": 0, "captureLevel": "info"
+}
+```
+Lines logged before the plugin loaded (the first lines of start-up) are not in the buffer.
+
 ## Tips for automation
 - Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand (add `?history=5` to see the last few messages).
 - Poll `GET /settings` in companion tools to show when capture is paused.

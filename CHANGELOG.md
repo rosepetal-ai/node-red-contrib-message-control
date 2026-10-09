@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.0 (unreleased)
+
+### Added
+- `GET /rosepetal/message-control/logs`: the last lines of Node-RED's log, in a fixed ring filled by a `RED.log` handler. Each entry is structured (`level`, node `id`/`type`/`name`/`z`, text), and the endpoint filters by level, text, node, type and time. Settings `logBufferSize` (default 2000) and `logLevel` (default `info`). Node construction errors only ever reach the log, so this is where to find them.
+
 ## 1.2.0
 
 ### Added

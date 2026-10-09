@@ -12,6 +12,7 @@ A Node-RED runtime plugin that remembers the last messages each node received an
 - **Stay lightweight**: snapshots are cleaned (buffers, typed arrays, streams, long strings and base64 blobs become annotated placeholders) so they are safe to ship to the editor.
 - **Pause when needed**: a single toggle removes the hooks from the router entirely; a paused plugin costs exactly nothing.
 - **Script-friendly**: the same data, plus runtime statistics, is available over HTTP for tooling, tests, or dashboards.
+- **Runtime log at hand**: the last lines of Node-RED's log (2000 by default), structured with level and node id/type/name, filterable over HTTP — node construction errors only ever reach the log.
 
 ## Quick start
 1. Change into your Node-RED user directory (usually `~/.node-red`).
@@ -29,6 +30,8 @@ A Node-RED runtime plugin that remembers the last messages each node received an
        historySize: 10,        // snapshots kept per node and direction (0-100); 0 = only the last one
        historyMaxBytes: 16777216, // global memory budget of the history (estimated bytes)
        captureUnwired: true,   // also record messages sent to outputs without wires
+       logBufferSize: 2000,    // log entries kept for GET /logs (0 = no log buffer)
+       logLevel: 'info',       // most verbose level kept: fatal|error|warn|info|debug|trace
        snapshotLimits: {       // hard caps applied to every snapshot
          maxDepth: 6, maxArrayLength: 50, maxObjectKeys: 60,
          maxStringLength: 2048, maxValues: 2000, maxChars: 262144
@@ -60,6 +63,10 @@ Turn it back on whenever you are ready—the view refreshes automatically for th
 
 ## Inspecting snapshots over HTTP
 If you prefer to script or automate, the plugin exposes a small admin API that mirrors the sidebar data (list nodes, inspect a specific node and its history with `?history=N`, get/set the capture settings, read runtime statistics). Details and example payloads live in [`docs/http-api.md`](docs/http-api.md).
+
+## Runtime tools over HTTP
+Besides the snapshots, the plugin offers tools for diagnosing a runtime from outside (e.g. an MCP server), all on the admin API under `/rosepetal/message-control` (details in [`docs/http-api.md`](docs/http-api.md)):
+- `GET /logs` — the last lines of Node-RED's log, filtered by level, text, node id, node type and time. The buffer is a fixed ring filled by a `RED.log` handler that does O(1) work per line; text filters are plain substrings (never caller-supplied regular expressions, which could stall the runtime).
 
 ## How it works
 - Hooks into `onSend` (outputs) and `onReceive` (inputs) via `RED.hooks`, so every runtime node is observed without patching node prototypes.
