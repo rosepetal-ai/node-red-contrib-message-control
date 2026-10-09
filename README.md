@@ -1,11 +1,13 @@
 # @rosepetal/node-red-contrib-message-control
 
-A Node-RED runtime plugin that remembers the last message each node received and sent. It gives you a live “what just happened?” snapshot without wiring extra debug nodes, and it is built so that it can stay enabled on a production runtime.
+A Node-RED runtime plugin that remembers the last messages each node received and sent, with a short timestamped history. It gives you a live “what just happened?” snapshot without wiring extra debug nodes, and it is built so that it can stay enabled on a production runtime.
 
 ![Example](assets/example.png)
 
 ## Why you might want it
 - **See data instantly**: select any runtime node in the editor and the latest inbound/outbound payloads appear in the Info sidebar.
+- **Short history**: the last few sampled messages per node and direction (default 10) are kept with their timestamps, under a global memory budget.
+- **Nothing gets lost on unwired outputs**: messages a node sends to an output without wires (which Node-RED silently drops) are recorded too, with the output port.
 - **Safe on the message path**: the hooks are synchronous, allocation-free and cost about 0.1 µs per message; snapshots are bounded, rate limited per node and capped by a global CPU budget. The plugin can never halt, delay or error a message.
 - **Stay lightweight**: snapshots are cleaned (buffers, typed arrays, streams, long strings and base64 blobs become annotated placeholders) so they are safe to ship to the editor.
 - **Pause when needed**: a single toggle removes the hooks from the router entirely; a paused plugin costs exactly nothing.
@@ -24,6 +26,9 @@ A Node-RED runtime plugin that remembers the last message each node received and
        captureEnabled: true,   // start capturing on boot (default true)
        captureInterval: 250,   // ms between two snapshots of the same node & direction; 0 = every message
        captureBudget: 5,       // ms of snapshot CPU allowed per second across all nodes; 0 = unlimited
+       historySize: 10,        // snapshots kept per node and direction (0-100); 0 = only the last one
+       historyMaxBytes: 16777216, // global memory budget of the history (estimated bytes)
+       captureUnwired: true,   // also record messages sent to outputs without wires
        snapshotLimits: {       // hard caps applied to every snapshot
          maxDepth: 6, maxArrayLength: 50, maxObjectKeys: 60,
          maxStringLength: 2048, maxValues: 2000, maxChars: 262144
@@ -43,7 +48,7 @@ Node-RED 3.0+ is required because the plugin relies on the `RED.hooks` runtime A
    - *Last Output*: the most recent sampled message it sent.
 4. Use the refresh button on the card to re-fetch without changing selection.
 
-Snapshots use a clean format: large payloads are summarised, but every placeholder includes the original length so you can judge the size at a glance. When a node is busier than the capture interval, the card shows how many newer messages went by since the sample was taken.
+Snapshots use a clean format: large payloads are summarised, but every placeholder includes the original length so you can judge the size at a glance. When a node is busier than the capture interval, the card shows how many newer messages went by since the sample was taken. When the last output went to an output without wires, the card says so.
 
 ## Pausing/resuming capture
 At the top of the Message Snapshot card you will find a **Capture snapshots** switch. Turning it off:
@@ -54,7 +59,7 @@ At the top of the Message Snapshot card you will find a **Capture snapshots** sw
 Turn it back on whenever you are ready—the view refreshes automatically for the currently selected node.
 
 ## Inspecting snapshots over HTTP
-If you prefer to script or automate, the plugin exposes a small admin API that mirrors the sidebar data (list nodes, inspect a specific node, get/set the capture settings, read runtime statistics). Details and example payloads live in [`docs/http-api.md`](docs/http-api.md).
+If you prefer to script or automate, the plugin exposes a small admin API that mirrors the sidebar data (list nodes, inspect a specific node and its history with `?history=N`, get/set the capture settings, read runtime statistics). Details and example payloads live in [`docs/http-api.md`](docs/http-api.md).
 
 ## How it works
 - Hooks into `onSend` (outputs) and `onReceive` (inputs) via `RED.hooks`, so every runtime node is observed without patching node prototypes.
@@ -62,7 +67,10 @@ If you prefer to script or automate, the plugin exposes a small admin API that m
 - Everything runs inside `try/catch` and never returns a value: Node-RED treats a hook that throws, or returns `false`, as a reason to drop the message, so the plugin never does either. Hook errors are counted in the stats and logged at most once per minute.
 - A snapshot is only taken when the node's capture interval has elapsed (default 250 ms per node and direction), when the global CPU budget for the current second is not spent (default 5 ms per second, i.e. at most 0.5 % of one core), and when the node did not recently produce a slow capture (a capture above 2 ms puts that node on a 10 s backoff).
 - The snapshot walker never deep-clones or `JSON.stringify`s the message. It reads the message once with hard limits on depth, keys per object, items per array, string length, total values (`maxValues`) and total characters (`maxChars`), and it treats buffers, typed arrays, streams, sockets, HTTP request/response objects and promises as opaque placeholders. Its cost is independent of the size of buffers, strings and arrays.
+- Every snapshot taken is also appended to the node's history for that direction, with its capture time, its sequence number (the message count at that moment, so sampling gaps are visible) and, for outputs, the port and whether it had wires. Each list keeps `historySize` entries; on top of that, all histories share a `historyMaxBytes` budget (estimated from the characters and values kept) and the oldest snapshots of any node are dropped first. Bookkeeping is O(1) amortised per snapshot.
+- Node-RED never calls the `onSend` hook for a message that goes nowhere: a node without wires gets a no-op `send`, and outputs without wires are skipped. To record those, the plugin wraps `Node.prototype.updateWires` (called whenever a node is created or rewired) and gives only the nodes that have an output without wires their own `send` wrapper. The wrapper records the unwired part with the same sampling rules and then behaves exactly like Node-RED's own `send` (still a no-op when nothing is wired). Fully wired nodes keep Node-RED's `send` untouched and pay nothing. Disabling capture, or setting `captureUnwired: false`, restores Node-RED's own functions.
 - Snapshots, node metadata and timestamps live in memory, keyed by node id, and are pruned on every deploy.
+- HTTP responses are bounded too: a history request returns at most about 2 MB of snapshots (newest first), so building the response never stalls the runtime.
 
 ## Measured overhead
 Chain of 7 function nodes on a real Node-RED 4.1.8 runtime (`npm run bench`, Node 22, best of 3 runs, message with a 50-item detections array plus metadata):
@@ -77,13 +85,14 @@ Chain of 7 function nodes on a real Node-RED 4.1.8 runtime (`npm run bench`, Nod
 Adding a 4 MB image buffer to every message does not change the numbers for this version (buffers are never copied or read); the previous version cloned the whole message twice per hop.
 
 ## Limitations & notes
-- Snapshots live only in memory. Restarting Node-RED or redeploying flows clears them.
+- Snapshots live only in memory. Restarting Node-RED clears them; a deploy drops the nodes that no longer exist.
 - Under sustained load a snapshot is a *sample*, not necessarily the very last message: check `inputSkipped`/`outputSkipped` and `lastInputSeenAt`/`lastOutputSeenAt` in the HTTP API to know how far behind it is. Set `captureInterval: 0` and `captureBudget: 0` while debugging a quiet flow if you need every message.
 - `lastInputSeenAt`/`lastOutputSeenAt` have ~50 ms resolution; capture timestamps are exact.
 - Nodes fed directly through `node.receive()` (the inject button, `link in` fed by `link out`, catch/status/complete nodes) are observed through the `onReceive` hook like any other node.
 - Enumerating the keys of a very large dictionary (tens of thousands of keys in one object) is O(n) in V8 no matter how many keys are kept; such nodes are automatically sampled at most every 10 s.
 - The HTTP routes require `flows.read` (GET) or `flows.write` (POST) permissions when admin authentication is enabled.
 - Only runtime nodes that have processed a message since the plugin was enabled (plus the nodes of the deployed flows) appear.
+- Unwired-output capture covers every node created or rewired while capture is on. After re-enabling capture at runtime, nodes inside subflow instances are covered again from the next deploy. A node whose `wires` array has fewer entries than it has outputs (only possible in hand-written flows) may miss sends to the missing ports.
 
 ## Development
 ```bash

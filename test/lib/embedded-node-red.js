@@ -75,7 +75,7 @@ function buildChainFlow(hops, funcs = []) {
  * `bench.done` is invoked by the sink node; `bench.waitFor(n)` resolves once
  * n more messages reached the sink.
  */
-async function startNodeRed({ nodeRedPath, flow, settings = {} }) {
+async function startNodeRed({ nodeRedPath, flow, settings = {}, installPlugin = false }) {
   const NR = nodeRedPath || findNodeRed();
   if (!NR) {
     throw new Error('node-red not found (set NODE_RED_PATH or npm install node-red)');
@@ -85,6 +85,13 @@ async function startNodeRed({ nodeRedPath, flow, settings = {} }) {
 
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rosepetal-mc-'));
   fs.writeFileSync(path.join(userDir, 'flows.json'), JSON.stringify(flow));
+  if (installPlugin) {
+    // Let Node-RED load this package from userDir/node_modules at start-up,
+    // exactly like an npm install would.
+    const scope = path.join(userDir, 'node_modules', '@rosepetal');
+    fs.mkdirSync(scope, { recursive: true });
+    fs.symlinkSync(path.resolve(__dirname, '..', '..'), path.join(scope, 'node-red-contrib-message-control'), 'dir');
+  }
 
   let pendingResolve = null;
   let pendingTarget = 0;
@@ -158,12 +165,13 @@ async function startNodeRed({ nodeRedPath, flow, settings = {} }) {
   return { RED, port, bench, stop, nodeRedVersion: require(path.join(NR, 'package.json')).version };
 }
 
-function httpJson(method, url, body) {
+function httpJson(method, url, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
+    const headers = payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {};
     const req = http.request(url, {
       method,
-      headers: payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {},
+      headers: { ...headers, ...extraHeaders },
     }, (res) => {
       let text = '';
       res.setEncoding('utf8');

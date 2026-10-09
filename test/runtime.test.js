@@ -67,16 +67,21 @@ function createHooksEngine() {
   };
 }
 
-function createMockRED({ configNodes = [], settings = {} } = {}) {
+function createMockRED({ configNodes = [], settings = {}, liveNodes = null } = {}) {
   const routes = [];
   const logs = { info: [], warn: [] };
   return {
     nodes: {
       eachNode(cb) {
         configNodes.forEach(cb);
+        if (liveNodes) {
+          for (const node of liveNodes.values()) {
+            cb({ id: node.id, type: node.type, name: node.name });
+          }
+        }
       },
-      getNode() {
-        return null;
+      getNode(id) {
+        return liveNodes ? liveNodes.get(id) || null : null;
       },
     },
     hooks: createHooksEngine(),
@@ -117,6 +122,10 @@ function createClock(start = 1000000) {
     },
   };
   return clock;
+}
+
+function withDefaults(overrides) {
+  return { ...plugin.DEFAULT_SETTINGS, ...overrides };
 }
 
 function makeInstance(options = {}) {
@@ -507,9 +516,12 @@ test('captures the first message in each direction with exact timestamps', () =>
   assert.equal(n2.inputCount, 1);
   assert.equal(n2.type, 'change');
   assert.deepEqual(Object.keys(n1).sort(), [
-    'id', 'inputCount', 'inputSkipped', 'lastInput', 'lastInputAt', 'lastInputSeenAt',
-    'lastOutput', 'lastOutputAt', 'lastOutputSeenAt', 'name', 'outputCount', 'outputSkipped', 'type',
+    'id', 'inputCount', 'inputHistoryCount', 'inputSkipped', 'lastInput', 'lastInputAt', 'lastInputSeenAt',
+    'lastOutput', 'lastOutputAt', 'lastOutputPort', 'lastOutputSeenAt', 'lastOutputWired', 'name',
+    'outputCount', 'outputHistoryCount', 'outputSkipped', 'type',
   ]);
+  assert.equal(n1.lastOutputPort, 0);
+  assert.equal(n1.lastOutputWired, true);
   api.stop();
 });
 
@@ -644,13 +656,16 @@ test('reads its configuration from settings.js under either package name', () =>
         enabled: false,
         captureInterval: 1000,
         captureBudget: 2,
+        historySize: 3,
+        historyMaxBytes: 4096,
+        captureUnwired: false,
         snapshotLimits: { maxValues: 25, maxDepth: 2, bogus: 'ignored' },
       },
     },
   };
   const a = makeInstance({ settings: settingsObject });
   assert.equal(a.RED.hooks.has(ON_SEND), false, 'enabled:false must not install hooks');
-  assert.deepEqual(a.api.getSettings(), { enabled: false, captureInterval: 1000, captureBudget: 2 });
+  assert.deepEqual(a.api.getSettings(), withDefaults({ enabled: false, captureInterval: 1000, captureBudget: 2, historySize: 3, historyMaxBytes: 4096, captureUnwired: false }));
   assert.equal(a.api.getStats().limits.maxValues, 25);
   assert.equal(a.api.getStats().limits.maxDepth, 2);
   assert.equal(a.api.getStats().limits.maxArrayLength, DEFAULT_LIMITS.maxArrayLength);
@@ -669,12 +684,12 @@ test('reads its configuration from settings.js under either package name', () =>
 
 test('validates runtime setting updates', () => {
   const { api } = makeInstance();
-  assert.deepEqual(api.updateSettings({ captureInterval: -5, captureBudget: 'nope', enabled: 'yes' }), {
-    enabled: true, captureInterval: 250, captureBudget: 5,
-  });
-  assert.deepEqual(api.updateSettings({ captureInterval: '500', captureBudget: 20 }), {
-    enabled: true, captureInterval: 500, captureBudget: 20,
-  });
+  assert.deepEqual(api.updateSettings({ captureInterval: -5, captureBudget: 'nope', enabled: 'yes', historySize: -1, historyMaxBytes: 'x', captureUnwired: 'no' }), withDefaults({}));
+  assert.deepEqual(api.updateSettings({ captureInterval: '500', captureBudget: 20, historySize: '7', historyMaxBytes: 1000 }), withDefaults({
+    captureInterval: 500, captureBudget: 20, historySize: 7, historyMaxBytes: 1000,
+  }));
+  assert.equal(api.updateSettings({ historySize: 1000 }).historySize, 100);
+  assert.equal(api.updateSettings({ historySize: 2.7 }).historySize, 2);
   assert.equal(api.updateSettings({ captureInterval: 1e12 }).captureInterval, 3600000);
   assert.equal(api.updateSettings({ captureBudget: 5000 }).captureBudget, 1000);
   assert.deepEqual(api.updateSettings(null).enabled, true);
@@ -707,7 +722,7 @@ test('HTTP endpoints expose summaries, snapshots, settings and stats', async () 
 
   res = fakeRes();
   findRoute(RED, 'get', '/settings')({}, res);
-  assert.deepEqual(res.body, { enabled: true, captureInterval: 250, captureBudget: 5 });
+  assert.deepEqual(res.body, withDefaults({}));
 
   res = fakeRes();
   findRoute(RED, 'get', '/stats')({}, res);
@@ -719,7 +734,7 @@ test('HTTP endpoints expose summaries, snapshots, settings and stats', async () 
   res = fakeRes();
   post({ body: { enabled: false, captureInterval: 100 } }, res);
   await res.finished;
-  assert.deepEqual(res.body, { enabled: false, captureInterval: 100, captureBudget: 5 });
+  assert.deepEqual(res.body, withDefaults({ enabled: false, captureInterval: 100 }));
   assert.equal(RED.hooks.has(ON_SEND), false);
 
   res = fakeRes();
@@ -787,6 +802,387 @@ test('the coarse clock timer never keeps the process alive and stops with the ho
 });
 
 // ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+test('keeps a short timestamped history per node and direction, newest first', () => {
+  const { api, clock, advance } = makeInstance();
+  api.updateSettings({ historySize: 3, captureInterval: 0 });
+  const times = [];
+  for (let i = 1; i <= 5; i += 1) {
+    times.push(clock.now);
+    api._hooks.onSend(sendEvents('n1', { payload: i }));
+    advance(10);
+  }
+  api._hooks.onReceive(receiveEvent('n1', { payload: 'in' }));
+
+  const entry = api.getLastMessageForNode('n1', { history: 'all' });
+  assert.deepEqual(entry.outputHistory.map((item) => item.msg.payload), [5, 4, 3]);
+  assert.deepEqual(entry.outputHistory.map((item) => item.seq), [5, 4, 3]);
+  assert.deepEqual(entry.outputHistory.map((item) => item.at), [times[4], times[3], times[2]]);
+  assert.deepEqual(entry.outputHistory[0], { at: times[4], seq: 5, port: 0, wired: true, msg: { payload: 5 } });
+  assert.deepEqual(entry.inputHistory, [{ at: clock.now, seq: 1, msg: { payload: 'in' } }]);
+  assert.equal(entry.outputHistoryCount, 3);
+  assert.equal(entry.inputHistoryCount, 1);
+
+  const limited = api.getLastMessageForNode('n1', { history: 1 });
+  assert.equal(limited.outputHistory.length, 1);
+  assert.equal(limited.inputHistory.length, 1);
+  assert.equal('outputHistory' in api.getLastMessageForNode('n1'), false, 'history is only returned on request');
+  api.stop();
+});
+
+test('sampled messages show up as gaps in the history sequence numbers', () => {
+  const { api, advance } = makeInstance();
+  api._hooks.onSend(sendEvents('n1', { payload: 1 }));
+  advance(100);
+  api._hooks.onSend(sendEvents('n1', { payload: 2 }));
+  api._hooks.onSend(sendEvents('n1', { payload: 3 }));
+  advance(200);
+  api._hooks.onSend(sendEvents('n1', { payload: 4 }));
+  const entry = api.getLastMessageForNode('n1', { history: 10 });
+  assert.deepEqual(entry.outputHistory.map((item) => [item.seq, item.msg.payload]), [[4, 4], [1, 1]]);
+  api.stop();
+});
+
+test('historySize 0 keeps only the last messages; shrinking the history frees its memory', () => {
+  const { api } = makeInstance();
+  api.updateSettings({ captureInterval: 0 });
+  for (let i = 0; i < 6; i += 1) {
+    api._hooks.onSend(sendEvents('n1', { payload: i }));
+  }
+  assert.equal(api._history().items, 6);
+  api.updateSettings({ historySize: 2 });
+  assert.equal(api.getLastMessageForNode('n1').outputHistoryCount, 2);
+  assert.equal(api._history().items, 2);
+  api.updateSettings({ historySize: 0 });
+  api._hooks.onSend(sendEvents('n1', { payload: 'last' }));
+  const entry = api.getLastMessageForNode('n1', { history: 5 });
+  assert.deepEqual(entry.lastOutput, { payload: 'last' });
+  assert.deepEqual(entry.outputHistory, []);
+  assert.equal(api._history().items, 0);
+  assert.equal(api._history().bytes, 0);
+  api.stop();
+});
+
+test('the global byte budget evicts the oldest snapshots of any node first', () => {
+  const { api } = makeInstance();
+  api.updateSettings({ captureInterval: 0, historySize: 100 });
+  const text = 'x'.repeat(2000);
+  for (let i = 0; i < 10; i += 1) {
+    api._hooks.onSend(sendEvents('a', { payload: `${text}${i}` }));
+    api._hooks.onSend(sendEvents('b', { payload: `${text}${i}` }));
+  }
+  assert.equal(api._history().items, 20);
+  const perSnapshot = api._history().bytes / 20;
+  api.updateSettings({ historyMaxBytes: Math.floor(perSnapshot * 4.5) });
+  const tail = (id) => api.getLastMessageForNode(id, { history: 'all' }).outputHistory.map((item) => item.msg.payload.slice(-1));
+  assert.deepEqual(tail('a'), ['9', '8']);
+  assert.deepEqual(tail('b'), ['9', '8']);
+  assert.ok(api._history().bytes <= api.getSettings().historyMaxBytes);
+  assert.equal(api.getStats().history.evicted, 16);
+  assert.equal(api.getStats().history.items, 4);
+  // The last snapshot of each node is kept even when the history is empty.
+  api.updateSettings({ historyMaxBytes: 0 });
+  assert.equal(api._history().items, 0);
+  assert.equal(api.getLastMessageForNode('a').lastOutput.payload.slice(-1), '9');
+  api.stop();
+});
+
+test('pruned, cleared and disabled nodes release their history', () => {
+  const configNodes = [{ id: 'keep', type: 'function', name: 'k' }];
+  const { RED, api } = makeInstance({ configNodes });
+  api.updateSettings({ captureInterval: 0 });
+  api._hooks.onSend(sendEvents('ghost', { payload: 1 }));
+  api._hooks.onSend(sendEvents('keep', { payload: 1 }));
+  api._hooks.onSend(sendEvents('other', { payload: 1 }));
+  assert.equal(api._history().items, 3);
+  RED.events.emit('flows:started', {});
+  assert.equal(api._history().items, 1, 'nodes that left the flows drop their snapshots');
+  api.clear('keep');
+  assert.equal(api._history().items, 0);
+  assert.equal(api._history().bytes, 0);
+  api._hooks.onSend(sendEvents('keep', { payload: 2 }));
+  api.updateSettings({ enabled: false });
+  assert.deepEqual(api._history(), { queued: 0, dead: 0, items: 0, bytes: 0 });
+  api.stop();
+});
+
+test('the global history queue stays bounded however many snapshots are discarded', () => {
+  const { api } = makeInstance();
+  api.updateSettings({ captureInterval: 0, captureBudget: 0, historySize: 1 });
+  for (let i = 0; i < 5000; i += 1) {
+    api._hooks.onSend(sendEvents('busy', { payload: i }));
+  }
+  const history = api._history();
+  assert.equal(history.items, 1);
+  assert.ok(history.queued <= 1026, `queue compacted (queued=${history.queued})`);
+  assert.deepEqual(api.getLastMessageForNode('busy', { history: 5 }).outputHistory.map((item) => item.msg.payload), [4999]);
+  api.stop();
+});
+
+test('GET /nodes/:id?history returns a bounded, validated history', () => {
+  const { RED, api } = makeInstance();
+  api.updateSettings({ captureInterval: 0 });
+  const handler = findRoute(RED, 'get', '/nodes/:id');
+  const wide = {};
+  for (let i = 0; i < 200; i += 1) {
+    wide[`k${i}`] = 'y'.repeat(2048);
+  }
+  for (let i = 0; i < 10; i += 1) {
+    api._hooks.onSend(sendEvents('big', { payload: { i, wide } }));
+  }
+  api._hooks.onSend(sendEvents('small', { payload: 's' }));
+
+  let res = fakeRes();
+  handler({ params: { id: 'small' }, query: { history: '2' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.outputHistory.map((item) => item.msg.payload), ['s']);
+  assert.deepEqual(res.body.inputHistory, []);
+
+  res = fakeRes();
+  handler({ params: { id: 'big' }, query: { history: 'all' } }, res);
+  assert.equal(res.body.historyTruncated, true, 'large histories are cut by the response budget');
+  assert.ok(res.body.outputHistory.length >= 1 && res.body.outputHistory.length < 10);
+  assert.equal(res.body.outputHistory[0].msg.payload.i, 9, 'the newest snapshots are kept');
+  assert.equal(res.body.outputHistoryCount, 10);
+
+  for (const bad of ['-1', 'abc', '1.5', ['1', '2']]) {
+    res = fakeRes();
+    handler({ params: { id: 'small' }, query: { history: bad } }, res);
+    assert.equal(res.statusCode, 400, `history=${bad} is rejected`);
+  }
+  res = fakeRes();
+  handler({ params: { id: 'small' }, query: { history: '5000' } }, res);
+  assert.equal(res.statusCode, 200, 'large counts are clamped');
+  res = fakeRes();
+  handler({ params: { id: 'missing' }, query: { history: '3' } }, res);
+  assert.equal(res.statusCode, 404);
+  api.stop();
+});
+
+test('POST /settings validates the history and unwired-capture settings', async () => {
+  const { RED, api } = makeInstance();
+  const post = findRoute(RED, 'post', '/settings');
+  let res = fakeRes();
+  post({ body: { historySize: 20, historyMaxBytes: 1024 * 1024, captureUnwired: false } }, res);
+  await res.finished;
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, withDefaults({ historySize: 20, historyMaxBytes: 1024 * 1024, captureUnwired: false }));
+  for (const body of [{ historySize: 101 }, { historySize: -1 }, { historySize: 'x' }, { historyMaxBytes: 2 * 1024 * 1024 * 1024 }]) {
+    res = fakeRes();
+    post({ body }, res);
+    await res.finished;
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+  }
+  api.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Sends to outputs without wires
+// ---------------------------------------------------------------------------
+
+// Mirrors @node-red/runtime Node wiring: a node without wires gets a no-op
+// send, Node.prototype.send skips ports without wires and triggers onSend
+// for the rest.
+function createFakeNodeRuntime(RED) {
+  const NOOP_SEND = function () {};
+  const delivered = [];
+  function Node(config) {
+    this.id = config.id;
+    this.type = config.type || 'function';
+    this.name = config.name || '';
+    this.updateWires(config.wires);
+  }
+  Node.prototype.updateWires = function (wires) {
+    this.wires = wires || [];
+    let count = 0;
+    this.wires.forEach((w) => { count += w.length; });
+    this.send = count === 0 ? NOOP_SEND : Node.prototype.send;
+  };
+  Node.prototype.send = function (msg) {
+    if (msg === null || msg === undefined) {
+      return;
+    }
+    const msgs = Array.isArray(msg) ? msg : [msg];
+    const events = [];
+    for (let port = 0; port < this.wires.length; port += 1) {
+      const out = port < msgs.length ? msgs[port] : null;
+      if (out === null || out === undefined) {
+        continue;
+      }
+      for (const target of this.wires[port]) {
+        for (const m of Array.isArray(out) ? out : [out]) {
+          if (m) {
+            events.push({ msg: m, source: { id: this.id, node: this, port }, destination: { id: target, node: undefined } });
+          }
+        }
+      }
+    }
+    if (events.length) {
+      RED.hooks.trigger('onSend', events, () => { delivered.push(...events); });
+    }
+  };
+  Node.prototype.receive = function () {};
+  return { Node, NOOP_SEND, delivered };
+}
+
+function makeUnwiredInstance({ before = [], settings } = {}) {
+  const liveNodes = new Map();
+  const RED = createMockRED({ liveNodes, settings });
+  const runtime = createFakeNodeRuntime(RED);
+  const originalUpdateWires = runtime.Node.prototype.updateWires;
+  const add = (config) => {
+    const node = new runtime.Node(config);
+    liveNodes.set(node.id, node);
+    return node;
+  };
+  const early = before.map(add);
+  const clock = createClock();
+  const api = plugin.create(RED, {
+    now: clock.read, hrNow: clock.readHr, disableClockTimer: true, nodePrototype: runtime.Node.prototype,
+  });
+  api.updateSettings({ captureInterval: 0 });
+  return { RED, api, runtime, add, early, liveNodes, originalUpdateWires };
+}
+
+test('records what a node without wires sends (Node-RED turns that send into a no-op)', () => {
+  const { api, add, runtime } = makeUnwiredInstance();
+  const node = add({ id: 'u1', wires: [] });
+  assert.notEqual(node.send, runtime.NOOP_SEND);
+  assert.equal(node.send({ payload: 1 }), undefined);
+  let entry = api.getLastMessageForNode('u1', { history: 5 });
+  assert.deepEqual(entry.lastOutput, { payload: 1 });
+  assert.equal(entry.lastOutputPort, 0);
+  assert.equal(entry.lastOutputWired, false);
+  assert.equal(entry.outputCount, 1);
+  assert.deepEqual(entry.outputHistory.map((item) => [item.port, item.wired, item.msg.payload]), [[0, false, 1]]);
+
+  node.send([null, [{ payload: 'a' }, { payload: 'b' }]]);
+  entry = api.getLastMessageForNode('u1', { history: 5 });
+  assert.equal(entry.lastOutputPort, 1, 'the port of a multi-output send is kept');
+  assert.deepEqual(entry.lastOutput, { payload: 'b' });
+  assert.equal(entry.outputCount, 2);
+  assert.equal(runtime.delivered.length, 0, 'nothing is delivered, exactly like the no-op');
+  node.send(null);
+  node.send('not a message');
+  assert.equal(api.getLastMessageForNode('u1').outputCount, 2);
+  assert.equal(api.getStats().unwired.sends, 2);
+  api.stop();
+});
+
+test('nodes started before capture is enabled are patched too', () => {
+  const { api, early, runtime } = makeUnwiredInstance({ before: [{ id: 'early', wires: [[]] }, { id: 'wired', wires: [['x']] }] });
+  assert.notEqual(early[0].send, runtime.NOOP_SEND);
+  assert.equal(early[1].send, runtime.Node.prototype.send, 'fully wired nodes keep Node-RED\'s own send');
+  early[0].send({ payload: 'early' });
+  assert.deepEqual(api.getLastMessageForNode('early').lastOutput, { payload: 'early' });
+  assert.equal(api.getStats().unwired.nodes, 1);
+  api.stop();
+});
+
+test('partially wired nodes: unwired ports are recorded, wired ports keep flowing through onSend', () => {
+  const { api, add, runtime } = makeUnwiredInstance();
+  const node = add({ id: 'sw', wires: [['sink'], []] });
+  node.send([null, { payload: 'nowhere' }]);
+  let entry = api.getLastMessageForNode('sw');
+  assert.deepEqual([entry.lastOutputPort, entry.lastOutputWired, entry.outputCount], [1, false, 1]);
+  assert.equal(runtime.delivered.length, 0);
+
+  node.send({ payload: 'wired' });
+  entry = api.getLastMessageForNode('sw');
+  assert.deepEqual([entry.lastOutputPort, entry.lastOutputWired, entry.outputCount], [0, true, 2]);
+  assert.equal(runtime.delivered.length, 1);
+
+  node.send([{ payload: 'a' }, { payload: 'b' }]);
+  entry = api.getLastMessageForNode('sw', { history: 10 });
+  assert.equal(entry.outputCount, 3, 'one send call is counted once');
+  assert.equal(runtime.delivered.length, 2);
+  assert.deepEqual(entry.outputHistory.map((item) => [item.msg.payload, item.port, item.wired]), [
+    ['a', 0, true], ['b', 1, false], ['wired', 0, true], ['nowhere', 1, false],
+  ]);
+  api.stop();
+});
+
+test('rewiring switches between the wrapper and Node-RED\'s own send', () => {
+  const { api, add, runtime } = makeUnwiredInstance();
+  const node = add({ id: 'r', wires: [['x']] });
+  assert.equal(node.send, runtime.Node.prototype.send);
+  node.updateWires([[]]);
+  assert.notEqual(node.send, runtime.NOOP_SEND);
+  node.updateWires([['x'], []]);
+  assert.notEqual(node.send, runtime.Node.prototype.send);
+  node.updateWires([['x'], ['y']]);
+  assert.equal(node.send, runtime.Node.prototype.send);
+  api.stop();
+});
+
+test('disabling capture restores Node-RED\'s own send and updateWires; enabling patches again', () => {
+  const { api, add, runtime, originalUpdateWires } = makeUnwiredInstance();
+  const none = add({ id: 'none', wires: [] });
+  const partial = add({ id: 'partial', wires: [['x'], []] });
+  assert.notEqual(runtime.Node.prototype.updateWires, originalUpdateWires);
+
+  api.updateSettings({ enabled: false });
+  assert.equal(runtime.Node.prototype.updateWires, originalUpdateWires);
+  assert.equal(none.send, runtime.NOOP_SEND);
+  assert.equal(partial.send, runtime.Node.prototype.send);
+  partial.send([{ payload: 1 }, { payload: 2 }]);
+  assert.equal(runtime.delivered.length, 1, 'messages keep flowing while capture is off');
+  assert.equal(api.getLastMessageForNode('partial'), null);
+
+  api.updateSettings({ enabled: true });
+  assert.notEqual(none.send, runtime.NOOP_SEND);
+  none.send({ payload: 'back' });
+  assert.deepEqual(api.getLastMessageForNode('none').lastOutput, { payload: 'back' });
+
+  api.updateSettings({ captureUnwired: false });
+  assert.ok(api.getStats().hooksInstalled, 'only the unwired capture is switched off');
+  assert.equal(none.send, runtime.NOOP_SEND);
+  assert.equal(runtime.Node.prototype.updateWires, originalUpdateWires);
+  api.updateSettings({ captureUnwired: true });
+  assert.notEqual(none.send, runtime.NOOP_SEND);
+  api.stop();
+  assert.equal(none.send, runtime.NOOP_SEND);
+  assert.equal(runtime.Node.prototype.updateWires, originalUpdateWires);
+});
+
+test('captureUnwired:false in settings.js never touches Node-RED\'s sends', () => {
+  const { api, add, runtime, originalUpdateWires } = makeUnwiredInstance({
+    settings: { plugins: { '@rosepetal/node-red-contrib-message-control': { captureUnwired: false } } },
+  });
+  const node = add({ id: 'n', wires: [] });
+  assert.equal(node.send, runtime.NOOP_SEND);
+  assert.equal(runtime.Node.prototype.updateWires, originalUpdateWires);
+  assert.equal(api.getStats().unwired.active, false);
+  api.stop();
+});
+
+test('a send set by the node itself is left alone', () => {
+  const { runtime, liveNodes } = makeUnwiredInstance();
+  const custom = function customSend() {};
+  const node = new runtime.Node({ id: 'own', wires: [] });
+  node.send = custom;
+  liveNodes.set('own', node);
+  const RED = createMockRED({ liveNodes });
+  const api = plugin.create(RED, { disableClockTimer: true, nodePrototype: runtime.Node.prototype });
+  assert.equal(node.send, custom);
+  api.stop();
+});
+
+test('send wrappers never throw and keep Node-RED\'s semantics for hostile messages', () => {
+  const { api, add, runtime } = makeUnwiredInstance();
+  const none = add({ id: 'none', wires: [] });
+  const partial = add({ id: 'partial', wires: [['x'], []] });
+  assert.doesNotThrow(() => none.send(throwingProxy()));
+  assert.doesNotThrow(() => none.send([throwingProxy(), [null, throwingProxy()]]));
+  assert.doesNotThrow(() => partial.send([{ payload: 'ok' }, throwingProxy()]));
+  assert.equal(runtime.delivered.length, 1, 'the wired part is still delivered');
+  assert.match(String(api.getLastMessageForNode('none').lastOutput), /Unreadable/);
+  api.stop();
+});
+
+// ---------------------------------------------------------------------------
 // Against the real @node-red/util hooks engine (skipped when unavailable)
 // ---------------------------------------------------------------------------
 
@@ -795,8 +1191,13 @@ function resolveRealHooks() {
   if (!nodeRedPath) {
     return null;
   }
-  const candidate = path.join(nodeRedPath, 'node_modules', '@node-red', 'util', 'lib', 'hooks.js');
-  return fs.existsSync(candidate) ? candidate : null;
+  try {
+    // Nested (global install) or hoisted (local npm install) @node-red/util.
+    return require.resolve('@node-red/util/lib/hooks.js', { paths: [nodeRedPath] });
+  } catch (err) {
+    const candidate = path.join(nodeRedPath, 'node_modules', '@node-red', 'util', 'lib', 'hooks.js');
+    return fs.existsSync(candidate) ? candidate : null;
+  }
 }
 
 const realHooksPath = resolveRealHooks();
