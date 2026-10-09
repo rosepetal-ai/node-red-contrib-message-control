@@ -56,3 +56,14 @@ test('long log texts are truncated', () => {
   assert.match(buffer.query().entries[0].text, /… \[truncated 4800 chars\]$/);
 });
 
+
+test('errors thrown inside a vm sandbox (function node) are logged with their message', () => {
+  const vm = require('vm');
+  const log = mockLog();
+  const buffer = createLogBuffer({ log }, { size: 3, serialize: () => '[Error]' });
+  buffer.install();
+  const err = vm.runInNewContext('(() => { try { throw new Error("bad input x"); } catch (e) { return e; } })()');
+  assert.equal(err instanceof Error, false, 'the error comes from another realm');
+  log.emit({ level: 20, id: 'f1', type: 'function', msg: err });
+  assert.match(buffer.query().entries[0].text, /^Error: bad input x/);
+});
