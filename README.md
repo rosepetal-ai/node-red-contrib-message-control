@@ -13,6 +13,7 @@ A Node-RED runtime plugin that remembers the last messages each node received an
 - **Pause when needed**: a single toggle removes the hooks from the router entirely; a paused plugin costs exactly nothing.
 - **Script-friendly**: the same data, plus runtime statistics, is available over HTTP for tooling, tests, or dashboards.
 - **Read installed node code**: list, search and read the files of any package installed in the user directory (or the core nodes), read-only — the only place where private packages' code can be seen.
+- **Send a message to any node**: deliver a message to a node's input exactly like a wire would, without adding temporary inject nodes.
 - **Runtime log at hand**: the last lines of Node-RED's log (2000 by default), structured with level and node id/type/name, filterable over HTTP — node construction errors only ever reach the log.
 
 ## Quick start
@@ -34,6 +35,7 @@ A Node-RED runtime plugin that remembers the last messages each node received an
        logBufferSize: 2000,    // log entries kept for GET /logs (0 = no log buffer)
        logLevel: 'info',       // most verbose level kept: fatal|error|warn|info|debug|trace
        moduleFiles: true,      // read-only access to installed module files (GET /module-files…)
+       sendToNode: true,       // POST /send delivers messages to node inputs
        snapshotLimits: {       // hard caps applied to every snapshot
          maxDepth: 6, maxArrayLength: 50, maxObjectKeys: 60,
          maxStringLength: 2048, maxValues: 2000, maxChars: 262144
@@ -70,6 +72,7 @@ If you prefer to script or automate, the plugin exposes a small admin API that m
 Besides the snapshots, the plugin offers tools for diagnosing a runtime from outside (e.g. an MCP server), all on the admin API under `/rosepetal/message-control` (details in [`docs/http-api.md`](docs/http-api.md)):
 - `GET /logs` — the last lines of Node-RED's log, filtered by level, text, node id, node type and time. The buffer is a fixed ring filled by a `RED.log` handler that does O(1) work per line; text filters are plain substrings (never caller-supplied regular expressions, which could stall the runtime).
 - `GET /module-files`, `/module-files/search`, `/module-files/read` — read-only access to the files of a package installed in `userDir/node_modules` (or `node-red` for the core nodes). Paths are confined to the package's real directory (symlinks are not followed out of it), binary files are skipped, and listing/searching is bounded in files, bytes, matches and time, with non-blocking file I/O.
+- `POST /send` — delivers a message to a node's input like a wire (`node.receive`), on the next turn of the event loop so the request never runs the node's code itself. The node really processes it: whatever it does downstream happens. Answers `202 {id, type, name, msgid, at}` (`at`: runtime clock when it was queued — use it as `since` for `/logs`).
 
 ## How it works
 - Hooks into `onSend` (outputs) and `onReceive` (inputs) via `RED.hooks`, so every runtime node is observed without patching node prototypes.

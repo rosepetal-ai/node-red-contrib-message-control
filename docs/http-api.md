@@ -239,6 +239,22 @@ Reads one file of a package: `module`, `path` (required, relative to the package
 
 Limits and confinement: files above 4 MB cannot be read (2 MB for search), answers carry at most 200 KB of text (whole lines), a search visits at most 5000 files / 64 MB / 5 s. A path that leaves the package — `..`, or a symlink resolving outside its real directory — is refused (`400 invalid_path`, `403 outside_module`); binary files answer `415`. Requires `flows.read`; disabled with `moduleFiles: false`.
 
+### `POST /rosepetal/message-control/send`
+Delivers a message to the input of a running node, as a wire would (`node.receive`): no temporary inject node is needed. The message is delivered on the next turn of the event loop and the node processes it for real — everything it does downstream (outputs, writes, devices) happens. The plugin records it as the node's input like any other message.
+
+**Request**
+```json
+{ "id": "d3f1a4b0", "msg": { "payload": 42, "topic": "test" }, "_csrf": "<token>" }
+```
+`msg` is optional (default `{}`); a `_msgid` is generated when missing.
+
+**Response 202**
+```json
+{ "id": "d3f1a4b0", "type": "function", "name": "parse", "msgid": "6f1c2e4d8a9b3c10" }
+```
+
+**Errors**: `404 unknown_node` (not running: unknown id, disabled node or tab), `409 no_input` (config nodes and nodes without input), `400 invalid_request` (msg not an object). Requires `flows.write`; disabled with `sendToNode: false`.
+
 ## Tips for automation
 - Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand (add `?history=5` to see the last few messages).
 - Poll `GET /settings` in companion tools to show when capture is paused.

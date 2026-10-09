@@ -34,6 +34,20 @@ test('runtime tools against a real Node-RED', { skip: !NODE_RED_PATH && 'node-re
       assert.ok(startup.body.entries.length >= 1, 'info lines from start-up are kept');
     });
 
+    await t.test('send delivers a message to a node input like a wire', async () => {
+      const done = host.bench.waitFor(1);
+      const res = await httpJson('POST', `${base}/send`, { id: 'f1', msg: { payload: { hop: 0, from: 'send' } } });
+      assert.equal(res.status, 202);
+      assert.equal(res.body.type, 'function');
+      assert.match(res.body.msgid, /^[0-9a-f]+$/);
+      await done;
+      const f2 = (await httpJson('GET', `${base}/nodes/f2?history=1`)).body;
+      assert.equal(f2.inputHistory[0].msg.payload.from, 'send');
+      assert.equal(f2.inputHistory[0].msg._msgid, res.body.msgid);
+      const refused = await httpJson('POST', `${base}/send`, { id: 'missing', msg: {} });
+      assert.equal(refused.status, 404);
+    });
+
     await t.test('module files of a private package are listed, searched and read', async () => {
       const pkg = path.join(host.userDir, 'node_modules', '@acme', 'private-nodes');
       fs.mkdirSync(path.join(pkg, 'nodes'), { recursive: true });
