@@ -207,6 +207,38 @@ The last lines of Node-RED's log, kept by the plugin in a ring buffer (`logBuffe
 ```
 Lines logged before the plugin loaded (the first lines of start-up) are not in the buffer.
 
+### `GET /rosepetal/message-control/module-files`
+Lists the files of an installed package (read-only).
+
+**Query parameters**
+- `module` (required) — npm package name installed in `userDir/node_modules` (e.g. `@acme/node-red-cameras`), or `node-red` for Node-RED's core nodes.
+- `glob` — only paths matching it (`*`, `**`, `?`), e.g. `**/*.js`.
+- `dependencies=true` — also walk nested `node_modules` (skipped by default).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "files": [ { "path": "nodes/camera.js", "size": 5120 } ], "complete": true, "notes": [], "skippedDependencies": true }
+```
+
+### `GET /rosepetal/message-control/module-files/search`
+Plain-text search through the files of a package: `module`, `query` (required, plain text — no regular expressions), `caseSensitive=true`, `glob`, `dependencies=true`, `limit` (default 100, max 500).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "query": "timeout", "matches": [ { "path": "nodes/camera.js", "line": 42, "text": "  const timeout = 5000;" } ],
+  "filesSearched": 12, "filesWithMatches": 1, "binarySkipped": 1, "truncated": false, "complete": true, "notes": [], "skippedDependencies": true }
+```
+
+### `GET /rosepetal/message-control/module-files/read`
+Reads one file of a package: `module`, `path` (required, relative to the package), `from` / `to` (1-based lines, optional).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "path": "nodes/camera.js", "size": 5120, "totalLines": 180, "from": 40, "to": 44, "truncated": false, "text": "…" }
+```
+
+Limits and confinement: files above 4 MB cannot be read (2 MB for search), answers carry at most 200 KB of text (whole lines), a search visits at most 5000 files / 64 MB / 5 s. A path that leaves the package — `..`, or a symlink resolving outside its real directory — is refused (`400 invalid_path`, `403 outside_module`); binary files answer `415`. Requires `flows.read`; disabled with `moduleFiles: false`.
+
 ## Tips for automation
 - Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand (add `?history=5` to see the last few messages).
 - Poll `GET /settings` in companion tools to show when capture is paused.

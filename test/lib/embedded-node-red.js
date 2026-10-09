@@ -162,7 +162,7 @@ async function startNodeRed({ nodeRedPath, flow, settings = {}, installPlugin = 
     }
   }
 
-  return { RED, port, bench, stop, nodeRedVersion: require(path.join(NR, 'package.json')).version };
+  return { RED, port, bench, stop, userDir, nodeRedVersion: require(path.join(NR, 'package.json')).version };
 }
 
 function httpJson(method, url, body, extraHeaders = {}) {

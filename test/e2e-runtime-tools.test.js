@@ -34,6 +34,22 @@ test('runtime tools against a real Node-RED', { skip: !NODE_RED_PATH && 'node-re
       assert.ok(startup.body.entries.length >= 1, 'info lines from start-up are kept');
     });
 
+    await t.test('module files of a private package are listed, searched and read', async () => {
+      const pkg = path.join(host.userDir, 'node_modules', '@acme', 'private-nodes');
+      fs.mkdirSync(path.join(pkg, 'nodes'), { recursive: true });
+      fs.writeFileSync(path.join(pkg, 'package.json'), '{"name":"@acme/private-nodes"}');
+      fs.writeFileSync(path.join(pkg, 'nodes', 'vision.js'), 'const threshold = 0.82;\nmodule.exports = () => threshold;\n');
+      const list = await httpJson('GET', `${base}/module-files?module=${encodeURIComponent('@acme/private-nodes')}`);
+      assert.deepEqual(list.body.files.map(f => f.path).sort(), ['nodes/vision.js', 'package.json']);
+      const found = await httpJson('GET', `${base}/module-files/search?module=${encodeURIComponent('@acme/private-nodes')}&query=threshold`);
+      assert.equal(found.body.matches.length, 2);
+      const read = await httpJson('GET', `${base}/module-files/read?module=${encodeURIComponent('@acme/private-nodes')}&path=nodes/vision.js&from=1&to=1`);
+      assert.equal(read.body.text, 'const threshold = 0.82;');
+      const escape = await httpJson('GET', `${base}/module-files/read?module=${encodeURIComponent('@acme/private-nodes')}&path=../../../settings.js`);
+      assert.equal(escape.status, 400);
+      const core = await httpJson('GET', `${base}/module-files/search?module=node-red&query=registerType(%22debug%22&glob=**/*.js`);
+      assert.equal(core.status, 200, JSON.stringify(core.body));
+    });
   } finally {
     await host.stop();
   }
