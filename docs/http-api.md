@@ -18,9 +18,11 @@ Each node entry contains:
 - `id`, `type`, `name`: copied from the runtime node (or from the deployed flow configuration).
 - `lastInput`, `lastOutput`: the cleaned snapshots. Buffers, typed arrays, streams/sockets/HTTP objects, base64 strings and data URLs collapse into `[Type withheld: size]` placeholders; long arrays keep the first items plus an `… N more items` note; objects with many keys keep the first ones plus `__rosepetalCleanTruncated` / `__rosepetalCleanNote`; long strings are cut with a `… [truncated N chars]` suffix; cycles become `[Circular]`. The whole snapshot is capped by `maxValues` (default 2000 values) and `maxChars` (default 256 KB of string content).
 - `lastInputAt`, `lastOutputAt`: epoch milliseconds when the snapshots were captured (`null` if never captured).
+- `lastOutputPort`, `lastOutputWired`: output port (0-based, as in the node's `wires` array) of the last output snapshot, and whether that port had wires. `lastOutputWired: false` means the message went nowhere: Node-RED drops messages sent to outputs without wires, the plugin still records them (setting `captureUnwired`).
 - `lastInputSeenAt`, `lastOutputSeenAt`: epoch milliseconds of the most recent message observed in that direction, even when it was not snapshotted (≈50 ms resolution).
 - `inputCount`, `outputCount`: messages observed since the plugin was enabled (outputs count `send` calls).
 - `inputSkipped`, `outputSkipped`: messages observed since the current snapshot was taken. `0` means the snapshot is the latest message.
+- `inputHistoryCount`, `outputHistoryCount`: snapshots currently kept in the history of each direction (see `?history`).
 
 Snapshots are samples: a node is snapshotted at most once per `captureInterval` per direction, within the global `captureBudget`, so under load the snapshot may be older than the last message. Use the `*SeenAt` and `*Skipped` fields to tell.
 
@@ -53,6 +55,16 @@ Fetches the full snapshot for a specific node id.
 **Path parameter**
 - `id` — Node-RED runtime id (the same string shown in the editor’s info panel).
 
+**Query parameter**
+- `history` (optional) — also return the history: up to this many snapshots per direction (`0`–`100`, larger values are clamped) or `all`. Without it the response has no history arrays.
+
+With `?history=N` the response adds:
+- `inputHistory`: `[{ "at": <epoch ms>, "seq": <inputCount at capture>, "msg": <snapshot> }, …]`, newest first.
+- `outputHistory`: `[{ "at", "seq", "port", "wired", "msg" }, …]`, newest first. `wired: false` marks a message sent to an output without wires.
+- `historyTruncated: true` when the snapshots did not fit in the response budget (about 2 MB); the newest ones are kept.
+
+Gaps in `seq` are messages that were observed but not sampled (see `captureInterval` / `captureBudget`).
+
 **Response 200**
 ```json
 {
@@ -70,14 +82,36 @@ Fetches the full snapshot for a specific node id.
   "lastInputAt": 1706811025123,
   "lastOutput": { "_msgid": "6f1c2e4d8a9b3c10", "payload": { "total": 245 } },
   "lastOutputAt": 1706811025125,
+  "lastOutputPort": 0,
+  "lastOutputWired": true,
   "lastInputSeenAt": 1706811025400,
   "lastOutputSeenAt": 1706811025400,
   "inputCount": 12,
   "outputCount": 12,
   "inputSkipped": 3,
-  "outputSkipped": 3
+  "outputSkipped": 3,
+  "inputHistoryCount": 4,
+  "outputHistoryCount": 4
 }
 ```
+
+**Response 200 with `?history=2`** (snapshots shortened)
+```json
+{
+  "id": "d3f1a4b0.f6c0a8",
+  "…": "same fields as above",
+  "inputHistory": [
+    { "at": 1706811025123, "seq": 12, "msg": { "_msgid": "6f1c2e4d8a9b3c10", "payload": { "items": [] } } },
+    { "at": 1706811024870, "seq": 8, "msg": { "_msgid": "0b7e…", "payload": { "items": [] } } }
+  ],
+  "outputHistory": [
+    { "at": 1706811025125, "seq": 12, "port": 0, "wired": true, "msg": { "payload": { "total": 245 } } },
+    { "at": 1706811024872, "seq": 8, "port": 1, "wired": false, "msg": { "payload": { "error": "no stock" } } }
+  ]
+}
+```
+
+**Response 400** — `history` is not a non-negative integer or `all`.
 
 **Response 404**
 ```json
@@ -89,7 +123,7 @@ Returns the current capture settings so external tools know whether instrumentat
 
 **Response 200**
 ```json
-{ "enabled": true, "captureInterval": 250, "captureBudget": 5 }
+{ "enabled": true, "captureInterval": 250, "captureBudget": 5, "historySize": 10, "historyMaxBytes": 16777216, "captureUnwired": true }
 ```
 
 ### `POST /rosepetal/message-control/settings`
@@ -97,16 +131,19 @@ Pause or resume capture, or change the sampling limits, at runtime.
 
 **Request body** (every key optional, at least one required)
 ```json
-{ "enabled": false, "captureInterval": 0, "captureBudget": 0, "_csrf": "<token>" }
+{ "enabled": false, "captureInterval": 0, "captureBudget": 0, "historySize": 20, "historyMaxBytes": 33554432, "captureUnwired": true, "_csrf": "<token>" }
 ```
 - `enabled` — `false` removes the hooks from the message router and clears all snapshots; `true` re-installs them.
 - `captureInterval` — milliseconds between two snapshots of the same node and direction (0–3600000). `0` samples every message.
 - `captureBudget` — milliseconds of snapshot CPU allowed per second across all nodes (0–1000). `0` disables the cap.
+- `historySize` — snapshots kept per node and direction (0–100). `0` keeps only `lastInput`/`lastOutput`. Shrinking it drops the oldest snapshots immediately.
+- `historyMaxBytes` — global budget, in estimated bytes, of all histories (0–1073741824). When exceeded, the oldest snapshots of any node are dropped first. `0` disables the history.
+- `captureUnwired` — `true` records messages sent to outputs without wires; `false` restores Node-RED's own `send` on every node.
 - `_csrf` is optional unless your Node-RED admin server enforces CSRF tokens.
 
 **Response 200**
 ```json
-{ "enabled": false, "captureInterval": 0, "captureBudget": 0 }
+{ "enabled": false, "captureInterval": 0, "captureBudget": 0, "historySize": 20, "historyMaxBytes": 33554432, "captureUnwired": true }
 ```
 
 **Common error codes**
@@ -120,6 +157,7 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
 **Response 200**
 ```json
 {
+  "version": "1.2.0",
   "enabled": true,
   "hooksInstalled": true,
   "clockRunning": true,
@@ -134,6 +172,8 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
   "captureMs": 38.2,
   "avgCaptureMs": 0.026,
   "maxCaptureMs": 0.9,
+  "history": { "items": 380, "bytes": 2965504, "evicted": 0 },
+  "unwired": { "active": true, "nodes": 7, "sends": 1520 },
   "errors": 0,
   "limits": { "maxDepth": 6, "maxArrayLength": 50, "maxObjectKeys": 60, "maxStringLength": 2048, "maxValues": 2000, "maxChars": 262144 }
 }
@@ -141,10 +181,12 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
 - `captureMs` is the total CPU time spent taking snapshots since start; divide by `uptimeMs` for the duty cycle.
 - `skippedByInterval` / `skippedByBudget` count messages that were observed but not snapshotted.
 - `slowCaptures` counts snapshots that exceeded 2 ms (their node is then sampled at most every 10 s).
+- `history` — snapshots currently kept in all histories, their estimated bytes, and how many were dropped by the `historyMaxBytes` budget.
+- `unwired` — whether unwired-output capture is active, how many nodes currently use the send wrapper, and how many sends to outputs without wires were observed.
 - `errors` counts hook invocations that hit an unexpected exception (the message was still delivered).
 
 ## Tips for automation
-- Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand.
+- Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand (add `?history=5` to see the last few messages).
 - Poll `GET /settings` in companion tools to show when capture is paused.
 - When tracing a single message through a quiet flow, temporarily `POST /settings` with `{ "captureInterval": 0, "captureBudget": 0 }` so every hop is sampled, then restore the defaults.
 - Remember that snapshots reset on every Node-RED restart, so hit your flows with representative traffic before asserting on snapshot data.

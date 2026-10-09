@@ -361,7 +361,7 @@
     outputSection.toggle(type !== 'error');
   }
 
-  function renderSection(section, snapshot, timestamp, skipped) {
+  function renderSection(section, snapshot, timestamp, skipped, note) {
     const elements = section.data('elements');
     if (!elements) {
       return;
@@ -369,6 +369,9 @@
     const { timestamp: timeEl, content, empty } = elements;
     const hasData = snapshot !== null && snapshot !== undefined;
     let label = formatTimestamp(timestamp);
+    if (hasData && note) {
+      label += ' · ' + note;
+    }
     if (hasData && typeof skipped === 'number' && skipped > 0) {
       label += ' · +' + skipped + ' newer not sampled';
     }
@@ -632,7 +635,10 @@
         elements.outputSection.find('.rosepetal-message-snapshot-empty').text('No output captured for this node yet.');
       } else {
         renderSection(elements.inputSection, data.lastInput, data.lastInputAt, data.inputSkipped);
-        renderSection(elements.outputSection, data.lastOutput, data.lastOutputAt, data.outputSkipped);
+        const unwiredNote = data.lastOutputWired === false
+          ? 'output ' + ((typeof data.lastOutputPort === 'number' ? data.lastOutputPort : 0) + 1) + ' has no wires'
+          : null;
+        renderSection(elements.outputSection, data.lastOutput, data.lastOutputAt, data.outputSkipped, unwiredNote);
       }
     }).fail(function(jqXHR) {
       if (nodeId !== currentNodeId) {
