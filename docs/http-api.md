@@ -185,6 +185,76 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
 - `unwired` — whether unwired-output capture is active, how many nodes currently use the send wrapper, and how many sends to outputs without wires were observed.
 - `errors` counts hook invocations that hit an unexpected exception (the message was still delivered).
 
+### `GET /rosepetal/message-control/logs`
+The last lines of Node-RED's log, kept by the plugin in a ring buffer (`logBufferSize`, default 2000; levels up to `logLevel`, default `info`). Node construction errors only ever reach the log: look here when a node does not start.
+
+**Query parameters** (all optional)
+- `level` — most verbose level returned: `fatal`, `error`, `warn`, `info`, `debug`, `trace`.
+- `text` — case-insensitive substring of the text, node name or node type (plain text, no regular expressions).
+- `node` — node id; `type` — node type.
+- `since`, `until` — epoch milliseconds.
+- `limit` — newest matching entries returned (default 200, max 1000), oldest first.
+
+**Response 200**
+```json
+{
+  "entries": [
+    { "seq": 41, "at": 1706811025123, "level": "error", "id": "d3f1a4b0", "type": "function", "name": "parse", "z": "tab1", "text": "SyntaxError: Unexpected identifier" }
+  ],
+  "matched": 1, "truncated": false, "buffered": 412, "bufferSize": 2000,
+  "oldestAt": 1706810000000, "droppedBeforeOldest": 0, "captureLevel": "info"
+}
+```
+Lines logged before the plugin loaded (the first lines of start-up) are not in the buffer.
+
+### `GET /rosepetal/message-control/module-files`
+Lists the files of an installed package (read-only).
+
+**Query parameters**
+- `module` (required) — npm package name installed in `userDir/node_modules` (e.g. `@acme/node-red-cameras`), or `node-red` for Node-RED's core nodes.
+- `glob` — only paths matching it (`*`, `**`, `?`), e.g. `**/*.js`.
+- `dependencies=true` — also walk nested `node_modules` (skipped by default).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "files": [ { "path": "nodes/camera.js", "size": 5120 } ], "complete": true, "notes": [], "skippedDependencies": true }
+```
+
+### `GET /rosepetal/message-control/module-files/search`
+Plain-text search through the files of a package: `module`, `query` (required, plain text — no regular expressions), `caseSensitive=true`, `glob`, `dependencies=true`, `limit` (default 100, max 500).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "query": "timeout", "matches": [ { "path": "nodes/camera.js", "line": 42, "text": "  const timeout = 5000;" } ],
+  "filesSearched": 12, "filesWithMatches": 1, "binarySkipped": 1, "truncated": false, "complete": true, "notes": [], "skippedDependencies": true }
+```
+
+### `GET /rosepetal/message-control/module-files/read`
+Reads one file of a package: `module`, `path` (required, relative to the package), `from` / `to` (1-based lines, optional).
+
+**Response 200**
+```json
+{ "module": "@acme/node-red-cameras", "path": "nodes/camera.js", "size": 5120, "totalLines": 180, "from": 40, "to": 44, "truncated": false, "text": "…" }
+```
+
+Limits and confinement: files above 4 MB cannot be read (2 MB for search), answers carry at most 200 KB of text (whole lines), a search visits at most 5000 files / 64 MB / 5 s. A path that leaves the package — `..`, or a symlink resolving outside its real directory — is refused (`400 invalid_path`, `403 outside_module`); binary files answer `415`. Requires `flows.read`; disabled with `moduleFiles: false`.
+
+### `POST /rosepetal/message-control/send`
+Delivers a message to the input of a running node, as a wire would (`node.receive`): no temporary inject node is needed. The message is delivered on the next turn of the event loop and the node processes it for real — everything it does downstream (outputs, writes, devices) happens. The plugin records it as the node's input like any other message.
+
+**Request**
+```json
+{ "id": "d3f1a4b0", "msg": { "payload": 42, "topic": "test" }, "_csrf": "<token>" }
+```
+`msg` is optional (default `{}`); a `_msgid` is generated when missing.
+
+**Response 202**
+```json
+{ "id": "d3f1a4b0", "type": "function", "name": "parse", "msgid": "6f1c2e4d8a9b3c10" }
+```
+
+**Errors**: `404 unknown_node` (not running: unknown id, disabled node or tab), `409 no_input` (config nodes and nodes without input), `400 invalid_request` (msg not an object). Requires `flows.write`; disabled with `sendToNode: false`.
+
 ## Tips for automation
 - Use `GET /nodes` to build a dropdown list of active nodes, then query `GET /nodes/:id` on demand (add `?history=5` to see the last few messages).
 - Poll `GET /settings` in companion tools to show when capture is paused.

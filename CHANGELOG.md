@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+- `GET /rosepetal/message-control/logs`: the last lines of Node-RED's log, in a fixed ring filled by a `RED.log` handler. Each entry is structured (`level`, node `id`/`type`/`name`/`z`, text), and the endpoint filters by level, text, node, type and time. Settings `logBufferSize` (default 2000) and `logLevel` (default `info`). Node construction errors only ever reach the log, so this is where to find them.
+- `GET /rosepetal/message-control/module-files` (plus `/search` and `/read`): read-only listing, plain-text search and reading of the files of a package installed in `userDir/node_modules`, or of `node-red`'s core nodes. Paths are confined to the package's real directory; symlinks are not followed out of it and binary files are skipped. Work is bounded in files, bytes, matches and time, with non-blocking I/O. Setting `moduleFiles` (default true).
+- `POST /rosepetal/message-control/send` delivers a message to a running node's input as a wire would (`node.receive` on the next tick), with no temporary inject nodes. The answer gives the node's id, type and name, the `msgid` and `at` (the runtime's clock, usable as `since` for `/logs`). Nodes without input are refused. Setting `sendToNode` (default true).
+
 ## 1.2.0
 
 ### Added
