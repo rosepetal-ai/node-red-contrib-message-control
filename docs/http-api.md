@@ -1,3 +1,19 @@
+---
+title: "HTTP API Reference - Message Control"
+description: "Admin HTTP routes of the Message Control plugin for Node-RED: last messages and history of every node, capture settings, statistics, the runtime log, files of installed packages and sending a message to a node. Part of @rosepetal/node-red-contrib-message-control."
+sidebar_label: "HTTP API"
+head:
+  - - meta
+    - name: "keywords"
+      content: "node-red, message control, HTTP API, admin API, message snapshot, message history, runtime log, module files, send message, rosepetal"
+  - - meta
+    - property: "og:title"
+      content: "HTTP API Reference - @rosepetal/node-red-contrib-message-control"
+  - - meta
+    - property: "og:description"
+      content: "Admin HTTP routes of the Message Control plugin for Node-RED: snapshots and history, capture settings, statistics, runtime log, module files and sending a message to a node."
+---
+
 # HTTP API reference
 
 The plugin exposes a small set of admin HTTP routes so you can inspect or control snapshots without using the editor UI. Every route lives on the Node-RED admin server (usually `http://localhost:1880`) and shares the base path `/rosepetal/message-control`.
@@ -5,7 +21,7 @@ The plugin exposes a small set of admin HTTP routes so you can inspect or contro
 ## Authentication & permissions
 - The routes honour Node-RED admin authentication.
 - `GET` routes require the `flows.read` permission.
-- `POST /settings` requires the `flows.write` permission.
+- `POST /settings` and `POST /send` require the `flows.write` permission.
 - If CSRF protection is enabled, include the editor’s `_csrf` token when issuing `POST /settings`.
 
 All responses are JSON. When something goes wrong you will see a payload shaped like:
@@ -134,8 +150,8 @@ Pause or resume capture, or change the sampling limits, at runtime.
 { "enabled": false, "captureInterval": 0, "captureBudget": 0, "historySize": 20, "historyMaxBytes": 33554432, "captureUnwired": true, "_csrf": "<token>" }
 ```
 - `enabled` — `false` removes the hooks from the message router and clears all snapshots; `true` re-installs them.
-- `captureInterval` — milliseconds between two snapshots of the same node and direction (0–3600000). `0` samples every message.
-- `captureBudget` — milliseconds of snapshot CPU allowed per second across all nodes (0–1000). `0` disables the cap.
+- `captureInterval` — milliseconds between two snapshots of the same node and direction (0–3600000, larger values are clamped). `0` samples every message.
+- `captureBudget` — milliseconds of snapshot CPU allowed per second across all nodes (0–1000, larger values are clamped). `0` disables the cap.
 - `historySize` — snapshots kept per node and direction (0–100). `0` keeps only `lastInput`/`lastOutput`. Shrinking it drops the oldest snapshots immediately.
 - `historyMaxBytes` — global budget, in estimated bytes, of all histories (0–1073741824). When exceeded, the oldest snapshots of any node are dropped first. `0` disables the history.
 - `captureUnwired` — `true` records messages sent to outputs without wires; `false` restores Node-RED's own `send` on every node.
@@ -148,7 +164,7 @@ Pause or resume capture, or change the sampling limits, at runtime.
 
 **Common error codes**
 - `400 invalid_request` — body is missing/invalid, contains no recognised setting, or a value is out of range.
-- `403 forbidden` — user lacks `flows.write` permission.
+- `401` — user lacks `flows.write` permission (answered by Node-RED's admin authentication, with an empty body).
 - `413 entity_too_large` — body larger than the 1 MB safety limit.
 
 ### `GET /rosepetal/message-control/stats`
@@ -157,7 +173,8 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
 **Response 200**
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
+  "features": ["history", "unwired", "logs", "module-files", "send"],
   "enabled": true,
   "hooksInstalled": true,
   "clockRunning": true,
@@ -178,6 +195,7 @@ Runtime statistics, useful to verify the plugin's cost on a live system.
   "limits": { "maxDepth": 6, "maxArrayLength": 50, "maxObjectKeys": 60, "maxStringLength": 2048, "maxValues": 2000, "maxChars": 262144 }
 }
 ```
+- `features` lists what this version and configuration offer: `history`, `unwired` and `logs` always, `module-files` and `send` unless they are disabled with `moduleFiles: false` / `sendToNode: false`.
 - `captureMs` is the total CPU time spent taking snapshots since start; divide by `uptimeMs` for the duty cycle.
 - `skippedByInterval` / `skippedByBudget` count messages that were observed but not snapshotted.
 - `slowCaptures` counts snapshots that exceeded 2 ms (their node is then sampled at most every 10 s).
@@ -250,8 +268,9 @@ Delivers a message to the input of a running node, as a wire would (`node.receiv
 
 **Response 202**
 ```json
-{ "id": "d3f1a4b0", "type": "function", "name": "parse", "msgid": "6f1c2e4d8a9b3c10" }
+{ "id": "d3f1a4b0", "type": "function", "name": "parse", "msgid": "6f1c2e4d8a9b3c10", "at": 1706811025123 }
 ```
+`at` is the runtime's clock (epoch milliseconds) when the message was queued: use it as `since` for `GET /logs`.
 
 **Errors**: `404 unknown_node` (not running: unknown id, disabled node or tab), `409 no_input` (config nodes and nodes without input), `400 invalid_request` (msg not an object). Requires `flows.write`; disabled with `sendToNode: false`.
 
