@@ -4,15 +4,6 @@ A Node-RED runtime plugin that remembers the last messages each node received an
 
 ![Example](assets/example.png)
 
-## Documentation
-
-| Page | Contents |
-|------|----------|
-| [Overview](docs/index.md) | Installation, requirements, what the plugin does, the snapshot card of the editor, configuration and a summary of the HTTP API |
-| [HTTP API reference](docs/http-api.md) | Every admin route under `/rosepetal/message-control`: snapshots and history, capture settings, statistics, runtime log, module files and sending a message to a node |
-
-The same pages are published at <https://docs.rosepetal.ai/flows/node-red-contrib-message-control>.
-
 ## Why you might want it
 - **See data instantly**: select any runtime node in the editor and the latest inbound/outbound payloads appear in the Info sidebar.
 - **Short history**: the last few sampled messages per node and direction (default 10) are kept with their timestamps, under a global memory budget.

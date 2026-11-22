@@ -15,7 +15,7 @@ head:
 
 # Message Control for Node-RED
 
-`@rosepetal/node-red-contrib-message-control` provides a runtime plugin for Node-RED that remembers the last messages each node received and sent, with a short timestamped history, and shows them in the editor's Info sidebar and over an HTTP API. It adds no nodes to the palette.
+`@rosepetal/node-red-contrib-message-control` provides a runtime plugin for Node-RED that remembers the last messages each node received and sent, with a short timestamped history, and shows them in the editor's Information sidebar and over an HTTP API. It adds no nodes to the palette.
 
 ## Installation
 
@@ -28,8 +28,8 @@ Restart Node-RED afterwards: the plugin is loaded when the runtime starts. It wo
 
 ## Requirements
 
-- Node-RED >= 3.0 (the plugin relies on the `RED.hooks` runtime API)
-- With admin authentication enabled (`adminAuth`), the `flows.read` permission to see the snapshots, and `flows.write` to pause the capture or send a message to a node
+- Node-RED >= 3.0. The plugin uses the `RED.hooks` runtime API and does not start without it.
+- With admin authentication enabled (`adminAuth`), the `flows.read` permission to see the snapshots, and `flows.write` to change the capture settings (the pause switch included) or send a message to a node.
 
 ## Reference
 
@@ -39,7 +39,7 @@ Restart Node-RED afterwards: the plugin is loaded when the runtime starts. It wo
 
 ## What it does
 
-- **Last input and output of every node**: select a node in the editor and the Info sidebar shows the most recent sampled message it received and the most recent one it sent, without wiring debug nodes.
+- **Last input and output of every node**: select a node in the editor and the Information sidebar shows the most recent sampled message it received and the most recent one it sent, without wiring debug nodes.
 - **Short history**: the last sampled messages per node and direction (10 by default) are kept with their capture time, under a global memory budget (16 MB by default).
 - **Sends to outputs without wires**: Node-RED drops a message sent to an output that has no wires; the plugin records it too, with the output port.
 - **Bounded snapshots**: a snapshot is a cleaned copy of the message. Buffers, typed arrays, long base64 strings and image data URLs become placeholders that state the original size (`[Buffer withheld: 24558336 bytes]`), streams and sockets become a placeholder with their type, and long strings, arrays and objects are cut at fixed limits.
@@ -52,17 +52,22 @@ Restart Node-RED afterwards: the plugin is loaded when the runtime starts. It wo
 
 ## Snapshots in the editor
 
-1. Open the **Info** sidebar (the **Information** panel in Node-RED 5).
+1. Open the **Information** sidebar.
 2. Click a node on the canvas.
 3. A **Message Snapshot** card appears below the node's properties; scroll the panel if it is short. It has two sections:
    - **Last Input**: the most recent sampled message the node received.
    - **Last Output**: the most recent sampled message it sent.
 
-![Message Snapshot card in the Info sidebar, with the Capture snapshots switch and the Last Input and Last Output sections](../assets/example.png)
+![Message Snapshot card in the Information sidebar, with the Capture snapshots checkbox and the Last Input and Last Output sections](../assets/example.png)
 
-The card is loaded when the node is selected; its refresh button loads it again without changing the selection. Each section shows the capture time of its snapshot. When the node is busier than the capture interval, the section also shows how many newer messages were not sampled, and when the last output went to an output without wires, it says which output.
+The card is loaded when the node is selected; its refresh button loads it again without changing the selection. It is not shown for tabs, groups and subflow instances, nor when several nodes are selected. Each section shows the capture time of its snapshot. When the node is busier than the capture interval, the section also shows how many newer messages were not sampled (`+3 newer not sampled`), and when the last output went to an output without wires, it says which output (`output 2 has no wires`, counted from 1).
 
-The **Capture snapshots** switch at the top of the card pauses the capture: the hooks are removed from the message router and the stored snapshots are cleared. While the capture is paused the card shows the message *Snapshots paused. Enable capture to resume.* Turn the switch on again to resume.
+When there is nothing to show, the card says so:
+- *No input captured for this node yet.* / *No output captured for this node yet.*: the node is deployed, but no message has been sampled in either direction. When only one section is empty, it says *No data captured yet.*
+- *No snapshots recorded for this node yet.*: the plugin does not know this node id, for example a node that is not deployed.
+- *Unable to load snapshot.*: the request failed, for example because the user lacks the `flows.read` permission.
+
+The **Capture snapshots** checkbox at the top of the card pauses the capture: the hooks are removed from the message router and the stored snapshots are cleared. It applies to the whole runtime, not only to the selected node; an editor already open elsewhere shows the new state of the checkbox once it is reloaded. While the capture is paused the card shows the message *Snapshots paused. Enable capture to resume.* Tick the checkbox again to resume.
 
 The card shows the last input and the last output. The history is available over HTTP, with `GET /nodes/:id?history=N`.
 
@@ -79,7 +84,7 @@ plugins: {
     historySize: 10,        // snapshots kept per node and direction (0-100); 0 = only the last one
     historyMaxBytes: 16777216, // global memory budget of the history (estimated bytes)
     captureUnwired: true,   // also record messages sent to outputs without wires
-    logBufferSize: 2000,    // log entries kept for GET /logs (0 = no log buffer)
+    logBufferSize: 2000,    // log entries kept for GET /logs (0 = no log buffer, at most 100000)
     logLevel: 'info',       // most verbose level kept: fatal|error|warn|info|debug|trace
     moduleFiles: true,      // read-only access to installed module files (GET /module-files…)
     sendToNode: true,       // POST /send delivers messages to node inputs
@@ -91,11 +96,13 @@ plugins: {
 }
 ```
 
-Restart Node-RED to apply a change of `settings.js`. The capture switch (`enabled`), `captureInterval`, `captureBudget`, `historySize`, `historyMaxBytes` and `captureUnwired` can also be changed while Node-RED runs, with `POST /settings`: those changes are kept in memory only, and a restart returns to the values of `settings.js`.
+A value that is not valid (a negative number, a string where a boolean is expected) is ignored and the default applies; a number above its maximum (3600000 for `captureInterval`, 1000 for `captureBudget`, 100 for `historySize`, 1073741824 for `historyMaxBytes`) is lowered to it.
+
+Restart Node-RED to apply a change of `settings.js`. The capture switch (`enabled`), `captureInterval`, `captureBudget`, `historySize`, `historyMaxBytes` and `captureUnwired` can also be changed while Node-RED runs, with `POST /settings`: those changes are kept in memory only, and a restart returns to the values of `settings.js`. Pausing the capture does not stop the log buffer, the module files routes or `POST /send`.
 
 ## HTTP API
 
-Every route is on the Node-RED admin server (usually `http://localhost:1880`), under `/rosepetal/message-control`. With admin authentication enabled, `GET` routes require the `flows.read` permission and `POST` routes `flows.write`.
+Every route is on the Node-RED admin server (usually `http://localhost:1880`, under `httpAdminRoot` when it is set), under `/rosepetal/message-control`. With admin authentication enabled, `GET` routes require the `flows.read` permission and `POST` routes `flows.write`; send the admin access token in an `Authorization: Bearer` header.
 
 | Route | Purpose |
 |-------|---------|
@@ -127,8 +134,9 @@ Parameters, response fields and error codes of every route are in the [HTTP API 
 ## Limitations
 
 - Snapshots live only in memory. Restarting Node-RED clears them, and a deploy drops the nodes that no longer exist.
-- Under sustained load a snapshot is a sample, not necessarily the very last message. The card shows how many newer messages were not sampled, and the HTTP API has the counters (`inputSkipped`, `outputSkipped`). Set `captureInterval: 0` and `captureBudget: 0` while debugging a quiet flow to snapshot every message.
+- Under sustained load a snapshot is a sample, not necessarily the very last message. The card shows how many newer messages were not sampled, and the HTTP API has the counters (`inputSkipped`, `outputSkipped`). Set `captureInterval: 0` and `captureBudget: 0` while debugging a quiet flow to snapshot every message (a snapshot that takes more than 2 ms still pauses that node for 10 s).
 - Only the nodes of the deployed flows, plus the runtime nodes that have processed a message since the capture was enabled, appear.
+- Nodes inside a subflow: the editor shows the subflow's definition, and the running copies of its nodes have other ids, so the card stays empty for them. `GET /nodes` lists the running copies under their own ids once they have processed a message after the last deploy.
 
 ## License
 
